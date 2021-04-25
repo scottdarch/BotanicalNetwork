@@ -33,3 +33,7 @@
 
 # build output
 build
+
+# Arduino
+arduino_secrets.h
+

@@ -36,7 +36,25 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SharpMem.h>
 #include "SHT1x.h"
+#include "arduino_secrets.h"
+#include <ArduinoMqttClient.h>
+#include <MqttClient.h>
+#include "HomeNet.h"
+#include "SoilProbe.h"
+#include "BotanyNet.h"
 
+// +--------------------------------------------------------------------------+
+// | NETWORKING
+// +--------------------------------------------------------------------------+
+
+BotanyNet::HomeNet homenet(SECRET_SSID, SECRET_SSID);
+
+WiFiClient wifiClient;
+MqttClient mqttClient(wifiClient);
+
+// +--------------------------------------------------------------------------+
+// | SENSORS AND DISPLAYS
+// +--------------------------------------------------------------------------+
 // any pins can be used
 #define SHARP_SCK 9
 #define SHARP_MOSI 8
@@ -49,46 +67,79 @@ Adafruit_SharpMem display(SHARP_SCK, SHARP_MOSI, SHARP_SS, 96, 96);
 // or other <4K "classic" devices!  The original display (96x96 pixels)
 // does work there, but is no longer produced.
 
+// +--------------------------------------------------------------------------+
+
 SHT1x sht1x(11, 12);
 
 #define BLACK 0
 #define WHITE 1
 
-int read_soil()
-{
-    digitalWrite(6, HIGH);     // turn D6 "On"
-    delay(10);                 // wait 10 milliseconds
-    int val = analogRead(A0);  // Read the SIG value form sensor
-    digitalWrite(6, LOW);      // turn D6 "Off"
-    return val;                // send current moisture value
-}
+BotanyNet::SoilProbe probe(A0, 6);
+
+BotanyNet::Node bnclient(mqttClient, MQTT_BROKER, MQTT_PORT);
+
+// +--------------------------------------------------------------------------+
 
 void display_value(int soil, float humidity, float temp)
 {
-    display.setTextSize(5);
+    display.setTextSize(1);
     display.setTextColor(BLACK);
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.setRotation(2);
-    display.cp437(true);
 
-    display.println(value);
-    display.println(humidity);
+    display.print("s: ");
+    display.println(soil);
+
+    display.print("h: ");
+    display.print(humidity);
+    display.println('%');
+
+    display.print("t: ");
+    display.print(temp);
+    display.println('c');
     display.refresh();
 }
 
+// +--------------------------------------------------------------------------+
+// | ARDUINO
+// +--------------------------------------------------------------------------+
+ 
 void setup(void)
 {
-    Serial.begin(9600);
+    Serial.begin(115200);
+    while (!Serial)
+    {
+        delay(500);
+    }
     Serial.println("Hello!");
+
+    // Connect to wifi
+    homenet.connect();
 
     // start & clear the display
     display.begin();
     display.clearDisplay();
+    display.setRotation(2);
+    display.cp437(true);
+
+    Serial.println("started?");
+
+    homenet.printCurrentNet();
+    homenet.printWifiData();
+    homenet.printStatus();
+
+    display.setTextSize(5);
+    display.setTextColor(BLACK);
+    display.clearDisplay();
+    display.setCursor(0, 0);
+
+    display.println("...");
+
+    display.refresh();
 }
 
 void loop(void)
 {
-    display_value(read_soil(), sht1x.readHumidity(), sht1x.readTemperatureC());
+    display_value(probe.read_soil(), sht1x.readHumidity(), sht1x.readTemperatureC());
     delay(500);
 }
