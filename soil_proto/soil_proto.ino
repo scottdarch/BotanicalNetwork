@@ -35,6 +35,7 @@
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_SharpMem.h>
+#include "SHT1x.h"
 
 // any pins can be used
 #define SHARP_SCK 9
@@ -48,6 +49,8 @@ Adafruit_SharpMem display(SHARP_SCK, SHARP_MOSI, SHARP_SS, 96, 96);
 // or other <4K "classic" devices!  The original display (96x96 pixels)
 // does work there, but is no longer produced.
 
+SHT1x sht1x(11, 12);
+
 #define BLACK 0
 #define WHITE 1
 
@@ -60,7 +63,7 @@ int read_soil()
     return val;                // send current moisture value
 }
 
-void display_value(int value)
+void display_value(int soil, float humidity, float temp)
 {
     display.setTextSize(5);
     display.setTextColor(BLACK);
@@ -70,6 +73,7 @@ void display_value(int value)
     display.cp437(true);
 
     display.println(value);
+    display.println(humidity);
     display.refresh();
 }
 
@@ -85,6 +89,6 @@ void setup(void)
 
 void loop(void)
 {
-    display_value(read_soil());
+    display_value(read_soil(), sht1x.readHumidity(), sht1x.readTemperatureC());
     delay(500);
 }

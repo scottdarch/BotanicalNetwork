@@ -1,5 +1,7 @@
 {
     "board": "arduino:samd:mkr1000",
     "port": "/dev/tty.usbmodem14101",
-    "sketch": "app.ino"
+    "sketch": "soil_proto.ino",
+    "output": "build",
+    "intelliSenseGen": "enable"
 }
