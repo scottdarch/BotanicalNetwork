@@ -47,11 +47,18 @@
 // +--------------------------------------------------------------------------+
 // | NETWORKING
 // +--------------------------------------------------------------------------+
+// NOTE: To setup access to wifi use the arduino ConnectWithWPA example once.
+// This will write the SSID and key into NVM.
 
-// To setup access to wifi use the arduino ConnectWithWPA example once. This will
-// write the SSID and key into NVM.
-BotanyNet::HomeNet homenet;
+// HomeNet singleton storage.
+BotanyNet::HomeNet BotanyNet::HomeNet::singleton;
 
+// alias the singleton to something nice to look at.
+constexpr BotanyNet::HomeNet& homenet = BotanyNet::HomeNet::singleton;
+
+// TODO: exchange this between the HomeNet and Node classes. Starage for the
+//       wifi should be in homenet and storage for the mqtt client should be
+//       in Node.
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
 
@@ -120,12 +127,12 @@ static SketchState state = SketchState::Initializing;
 
 void checkLan(const unsigned long now_millis)
 {
-    (void)now_millis;
-    homenet.service();
+    homenet.service(now_millis);
     if (homenet.getStatus() != WL_CONNECTED)
     {
         Serial.println("LAN is not connected. Starting over...");
         homenet.printStatus();
+        bnclient.disconnect();
         state = SketchState::Initializing;
     }
 }
@@ -163,8 +170,8 @@ void handleWaitingForLan(const unsigned long now_millis)
 
 void checkMqtt(const unsigned long now_millis)
 {
-    (void)now_millis;
-    if (state == SketchState::BotnetOnline && !bnclient.connected())
+    bnclient.service(now_millis);
+    if (state == SketchState::BotnetOnline && !bnclient.isConnected())
     {
         Serial.println("MQTT connect was closed. Reconnecting...");
         state = SketchState::Online;
@@ -177,22 +184,16 @@ void handleWaitingForMqtt(const unsigned long now_millis)
     if (state == SketchState::Online)
     {
         Serial.println("Trying to connect to botnet...");
-        const int connection_result = bnclient.connect();
-        if (connection_result == MQTT_SUCCESS)
-        {
-            state = SketchState::WaitingForMqtt;
-        }
-        else
-        {
-            state = SketchState::WaitingForMqtt;
-            Serial.print("MQTT connection failed! Error code = ");
-            Serial.println(connection_result);
-            delay(1500);
-        }
+        bnclient.requestConnection();
+        state = SketchState::WaitingForMqtt;
     }
-    else
+    else if (state == SketchState::WaitingForMqtt)
     {
-        // TODO: if connected then advance state.
+        if (bnclient.isConnected())
+        {
+            Serial.println("connected to botnet.");
+            state = SketchState::BotnetOnline;
+        }
     }
 }
 
@@ -207,9 +208,11 @@ void runBotnet(const unsigned long now_millis)
         const int soil = probe.readSoil();
         const float temperature_celcius = sht1x.readTemperatureC();
         display_value(soil, humidity, temperature_celcius);
-        bnclient.sendSoilHumidity(humidity);
+        bnclient.sendHumidity(humidity);
+        bnclient.sendTemperatureC(temperature_celcius);
+        bnclient.sendFloat("botanynet/soilr", static_cast<float>(soil));
     }
-    delay(100);
+    delay(2000);
 }
 
 // +--------------------------------------------------------------------------+

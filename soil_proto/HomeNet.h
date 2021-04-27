@@ -41,30 +41,21 @@
 #include <WiFi101.h>
 #include <WiFiUdp.h>
 #include <algorithm>
-#include <MDNS_Generic.h>
+#include <ArduinoMDNS.h>
+
+#ifndef BOTANYNET_XSTR
+#    define BOTANYNET_XSTR(s) BOTANYNET_STR(s)
+#    define BOTANYNET_STR(s) #    s
+#endif
 
 namespace BotanyNet
 {
-void nameFound(const char* name, IPAddress ip)
-{
-    if (ip != INADDR_NONE)
-    {
-        Serial.print("The IP address for '");
-        Serial.print(name);
-        Serial.print("' is ");
-        Serial.println(ip);
-    }
-    else
-    {
-        Serial.print("Resolving '");
-        Serial.print(name);
-        Serial.println("' timed out.");
-    }
-}
-
+/**
+ * See comments on the `singleton` class member for how to include this object
+ * into your sketch.
+ */
 class HomeNet final
 {
-public:
     HomeNet()
         : m_udp()
         , m_mdns(m_udp)
@@ -73,6 +64,37 @@ public:
         WiFi.setTimeout(10000);
     }
 
+public:
+    /**
+     * Forms a botany newtwork node name to report via mDNS.
+     */
+    static constexpr const char* NodeName = "botnet.node" BOTANYNET_STR(BOTNET_NODEID);
+
+    /**
+     * These are µCs. Don't use overly flowery hostnames, okay?
+     */
+    static constexpr size_t MaxHostNameLen = 64;
+
+    enum class Result : int
+    {
+        SUCCESS = 1,
+        OKAY_FALSE = 0,
+        INVALID_ARGUMENT = -2,
+        INVALID_STATE = -3,
+        UNKNOWN_ERROR = -4
+    };
+
+private:
+    /**
+     * Used for the one-at-a-time host name resolution.
+     */
+    struct HostNameRecord
+    {
+        char hostname[MaxHostNameLen + 1];
+        IPAddress  addr;
+    };
+
+public:
     uint8_t connect()
     {
         return WiFi.begin();
@@ -137,11 +159,6 @@ public:
         Serial.println(mac[0], HEX);
     }
 
-    int ping(const char* const url) const
-    {
-        return WiFi.ping(url);
-    }
-
     uint8_t getStatus() const
     {
         return WiFi.status();
@@ -152,12 +169,13 @@ public:
         Serial.println(statusString(WiFi.status()));
     }
 
-    void service()
+    void service(unsigned long now_millis)
     {
+        (void)now_millis;
         if (!m_mdns_init && WiFi.status() == WL_CONNECTED)
         {
-            m_mdns.begin(WiFi.localIP(), "botnode1");
-            m_mdns.setNameResolvedCallback(nameFound);
+            m_mdns.begin(WiFi.localIP(), HomeNet::NodeName);
+            m_mdns.setNameResolvedCallback(HomeNet::mdnsCallback);
             m_mdns_init = true;
             Serial.println("MDNS is running.");
         }
@@ -167,11 +185,48 @@ public:
         }
     }
 
-    void resolveHost(const char* const hostname)
+    Result startResolvingHostname(const char* const hostname)
     {
-        if (m_mdns_init && !m_mdns.isResolvingName())
+        if (!hostname)
         {
-            m_mdns.resolveName(hostname, 5000);
+            // invalid argument
+            return Result::INVALID_ARGUMENT;
+        }
+        const size_t hostNameLen = strlen(hostname);
+        
+        if (hostNameLen > MaxHostNameLen)
+        {
+            // Can't look this up because it's null or too long.
+            return Result::INVALID_ARGUMENT;
+        }
+        if (!m_mdns_init)
+        {
+            // Called too soon
+            return Result::INVALID_STATE;
+        }
+        if (m_mdns.isResolvingName())
+        {
+            m_mdns.cancelResolveName();
+        }
+
+        // Reset any previously cached record.
+        m_hostname_record.hostname[0] = 0;
+        m_hostname_record.addr = INADDR_NONE;
+
+        m_mdns.resolveName(hostname, 5000);
+        return Result::SUCCESS;
+    }
+
+    Result getHostName(const char* const hostname, IPAddress& outAddr) const
+    {
+        if (hostname && strncmp(hostname, m_hostname_record.hostname, MaxHostNameLen) == 0)
+        {
+            outAddr = m_hostname_record.addr;
+            return Result::SUCCESS;
+        }
+        else
+        {
+            return Result::OKAY_FALSE;
         }
     }
 
@@ -210,12 +265,61 @@ public:
         }
     }
 
+    /**
+     * You must declare the storage space for this in your sketch. For example:
+     * ```
+     *     // HomeNet singleton storage.
+     *     BotanyNet::HomeNet BotanyNet::HomeNet::singleton;
+     *
+     *     // alias the singleton to something if you want to avoid the clunkly
+     *     // static access syntax.
+     *     constexpr BotanyNet::HomeNet& my_home_network = BotanyNet::HomeNet::singleton;
+     * ```
+     * Why?
+     * Because you don't want your firmware to be executing constructors in include statements.
+     * This is particularly bad because subsequent includes can alias things after the class
+     * is constructed and the order that the singleton is constructed can change based
+     * on include guards and which other header is first to include this one. Yes Arduino
+     * does this a lot but it's just a bad plan.
+     */
+    static HomeNet singleton;
+
 private:
-    WiFiUDP m_udp;
-    MDNS    m_mdns;
-    bool    m_mdns_init;
+    void onNameFound(const char* hostname, const IPAddress& ip)
+    {
+        if (!hostname)
+        {
+            Serial.println("Unknown error (name ptr was null?)");
+        }
+        else if (ip != INADDR_NONE)
+        {
+            Serial.print("The IP address for '");
+            Serial.print(hostname);
+            Serial.print("' is ");
+            Serial.println(ip);
+            const size_t hostNameLen = strlen(hostname);
+            strncpy(m_hostname_record.hostname, hostname, std::min(hostNameLen, MaxHostNameLen) + 1);
+            m_hostname_record.addr = ip;
+        }
+        else
+        {
+            Serial.print("Resolving '");
+            Serial.print(hostname);
+            Serial.println("' timed out.");
+        }
+    }
+
+    static void mdnsCallback(const char* name, IPAddress ip)
+    {
+        HomeNet::singleton.onNameFound(name, ip);
+    }
+
+    WiFiUDP        m_udp;
+    MDNS           m_mdns;
+    bool           m_mdns_init;
+    HostNameRecord m_hostname_record;
 };
 
 }  // namespace BotanyNet
 
-#endif // BOTANYNET_HOMENET_INCLUDED_H
+#endif  // BOTANYNET_HOMENET_INCLUDED_H

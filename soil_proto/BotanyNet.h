@@ -52,38 +52,61 @@ public:
         , m_mqtt_client(client)
         , m_mqtt_broker{0}
         , m_mqtt_broker_port(port)
+        , m_hostname_lookup_started(false)
+        , m_mqtt_client_address()
+        , m_should_connect(false)
     {
         if (broker)
         {
             strncpy(m_mqtt_broker, broker, std::min(strlen(broker), MaxBrokerUrlLen) + 1);
         }
+        // TODO: hostname TTL
     }
 
-    int connect()
+    void requestConnection()
     {
-        m_net.resolveHost(m_mqtt_broker);
-        int error = MQTT_SUCCESS;
-        // if (!m_mqtt_client.connect(m_mqtt_broker, m_mqtt_broker_port))
-        // {
-        //     error = m_mqtt_client.connectError();
-        // }
-        return error;
+        
+        m_should_connect = true;
     }
 
-    bool connected()
+    void disconnect()
+    {
+        m_should_connect =  false;
+        m_mqtt_client.stop();
+        m_hostname_lookup_started = false;
+    }
+
+    bool isConnected()
     {
         return m_mqtt_client.connected();
     }
 
-    void sendSoilHumidity(float humidity)
+    void sendHumidity(float humidity)
     {
-        if (!m_mqtt_client.beginMessage("botanynet/soilhum"))
+        sendFloat("botanynet/humidity", humidity);
+    }
+
+    void sendTemperatureC(float degressC)
+    {
+        sendFloat("botanynet/tempc", degressC);
+    }
+
+    void sendFloat(const char* const topic, float value)
+    {
+        // TODO: control topic prefix internally
+        // TODO: json structure including nodeid
+        // TODO: ensure is compatible with homeassistant plant cards.
+        if (!m_mqtt_client.connected())
+        {
+            return;
+        }
+        if (!m_mqtt_client.beginMessage(topic))
         {
             Serial.println("beginMessage failed!");
         }
         else
         {
-            m_mqtt_client.print(humidity);
+            m_mqtt_client.print(value);
             if (!m_mqtt_client.endMessage())
             {
                 Serial.println("endMessage failed!");
@@ -91,11 +114,49 @@ public:
         }
     }
 
+    void service(unsigned long now_millis)
+    {
+        (void)now_millis;
+        if (!m_hostname_lookup_started)
+        {
+            if (HomeNet::Result::SUCCESS == m_net.startResolvingHostname(m_mqtt_broker))
+            {
+                m_hostname_lookup_started = true;
+            }
+        }
+        else if (m_should_connect && !m_mqtt_client.connected())
+        {
+            if (HomeNet::Result::SUCCESS == m_net.getHostName(m_mqtt_broker, m_mqtt_client_address))
+            {
+                connectNow();
+            }
+        }
+    }
+
 private:
+    void connectNow()
+    {
+        if (!m_mqtt_client.connect(m_mqtt_client_address, m_mqtt_broker_port))
+        {
+            const int error = m_mqtt_client.connectError();
+            Serial.print("MQTT connection error (");
+            Serial.print(error);
+            Serial.println(')');
+        }
+        else
+        {
+            Serial.print("Connected to MQTT broker ");
+            Serial.println(m_mqtt_broker);
+        }
+    }
+
     HomeNet&   m_net;
     MqttClient m_mqtt_client;
     char       m_mqtt_broker[MaxBrokerUrlLen + 1];
     const int  m_mqtt_broker_port;
+    bool       m_hostname_lookup_started;
+    IPAddress  m_mqtt_client_address;
+    bool       m_should_connect;
 };
 
 }  // namespace BotanyNet
