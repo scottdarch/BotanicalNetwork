@@ -32,8 +32,12 @@
 //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 //  SOFTWARE.
 //
+#ifndef BOTANYNET_BOTANYNET_INCLUDED_H
+#define BOTANYNET_BOTANYNET_INCLUDED_H
+
 #include <MqttClient.h>
 #include <algorithm>
+#include "HomeNet.h"
 
 namespace BotanyNet
 {
@@ -43,8 +47,9 @@ class Node
 public:
     static constexpr size_t MaxBrokerUrlLen = 24u;
 
-    Node(MqttClient& client, const char* const broker, int port)
-        : m_mqtt_client(client)
+    Node(HomeNet& network, MqttClient& client, const char* const broker, int port)
+        : m_net(network)
+        , m_mqtt_client(client)
         , m_mqtt_broker{0}
         , m_mqtt_broker_port(port)
     {
@@ -56,31 +61,43 @@ public:
 
     int connect()
     {
-        int error = 0;
-        if (!m_mqtt_client.connect(m_mqtt_broker, m_mqtt_broker_port))
-        {
-            error = m_mqtt_client.connectError();
-            Serial.print("MQTT connection failed! Error code = ");
-            Serial.println(error);
-        }
+        m_net.resolveHost(m_mqtt_broker);
+        int error = MQTT_SUCCESS;
+        // if (!m_mqtt_client.connect(m_mqtt_broker, m_mqtt_broker_port))
+        // {
+        //     error = m_mqtt_client.connectError();
+        // }
         return error;
     }
 
-    void poll()
+    bool connected()
     {
-        m_mqtt_client.poll();
+        return m_mqtt_client.connected();
     }
 
     void sendSoilHumidity(float humidity)
     {
-        m_mqtt_client.beginMessage("botanynet/soilhum");
-        m_mqtt_client.print(humidity);
-        m_mqtt_client.endMessage();
+        if (!m_mqtt_client.beginMessage("botanynet/soilhum"))
+        {
+            Serial.println("beginMessage failed!");
+        }
+        else
+        {
+            m_mqtt_client.print(humidity);
+            if (!m_mqtt_client.endMessage())
+            {
+                Serial.println("endMessage failed!");
+            }
+        }
     }
+
 private:
+    HomeNet&   m_net;
     MqttClient m_mqtt_client;
-    char m_mqtt_broker[MaxBrokerUrlLen + 1];
-    const int m_mqtt_broker_port;
+    char       m_mqtt_broker[MaxBrokerUrlLen + 1];
+    const int  m_mqtt_broker_port;
 };
 
-} // namespace BotanyNet
+}  // namespace BotanyNet
+
+#endif // BOTANYNET_BOTANYNET_INCLUDED_H

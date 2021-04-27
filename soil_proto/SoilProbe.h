@@ -32,6 +32,9 @@
 //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 //  SOFTWARE.
 //
+#ifndef BOTANYNET_SOILPROBE_H
+#define BOTANYNET_SOILPROBE_H
+
 #include <Arduino.h>
 
 namespace BotanyNet
@@ -45,7 +48,7 @@ public:
         , m_adc_pin(adc_pin)
     {}
 
-    int read_soil()
+    int readSoil()
     {
         digitalWrite(m_power_pin, HIGH);
         delay(10);
@@ -60,3 +63,5 @@ private:
 };
 
 } // BotanyNet
+
+#endif // BOTANYNET_SOILPROBE_H

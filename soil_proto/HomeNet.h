@@ -35,35 +35,47 @@
 //  Parts of this class adapted from https://www.arduino.cc/en/Tutorial/LibraryExamples/ConnectWithWPA
 //  by Tom Igoe
 //
+#ifndef BOTANYNET_HOMENET_INCLUDED_H
+#define BOTANYNET_HOMENET_INCLUDED_H
+
 #include <WiFi101.h>
+#include <WiFiUdp.h>
 #include <algorithm>
+#include <MDNS_Generic.h>
 
 namespace BotanyNet
 {
+void nameFound(const char* name, IPAddress ip)
+{
+    if (ip != INADDR_NONE)
+    {
+        Serial.print("The IP address for '");
+        Serial.print(name);
+        Serial.print("' is ");
+        Serial.println(ip);
+    }
+    else
+    {
+        Serial.print("Resolving '");
+        Serial.print(name);
+        Serial.println("' timed out.");
+    }
+}
 
 class HomeNet final
 {
 public:
-    static constexpr size_t MaxSSIDLen = 12u;
-    static constexpr size_t MaxPassLen = 24u;
-
-    HomeNet(const char* const ssid, const char* const pass)
-        : m_ssid{0}
-        , m_pass{0}
+    HomeNet()
+        : m_udp()
+        , m_mdns(m_udp)
+        , m_mdns_init(false)
     {
-        if (ssid)
-        {
-            strncpy(m_ssid, ssid, std::min(strlen(ssid), MaxSSIDLen) + 1);
-        }
-        if (pass)
-        {
-            strncpy(m_pass, pass, std::min(strlen(pass), MaxPassLen) + 1);
-        }
+        WiFi.setTimeout(10000);
     }
 
-    void connect()
+    uint8_t connect()
     {
-        WiFi.begin();
+        return WiFi.begin();
     }
 
     void printCurrentNet() const
@@ -125,48 +137,85 @@ public:
         Serial.println(mac[0], HEX);
     }
 
+    int ping(const char* const url) const
+    {
+        return WiFi.ping(url);
+    }
+
+    uint8_t getStatus() const
+    {
+        return WiFi.status();
+    }
+
     void printStatus() const
     {
-        Serial.print(statusString(WiFi.status()));
+        Serial.println(statusString(WiFi.status()));
+    }
+
+    void service()
+    {
+        if (!m_mdns_init && WiFi.status() == WL_CONNECTED)
+        {
+            m_mdns.begin(WiFi.localIP(), "botnode1");
+            m_mdns.setNameResolvedCallback(nameFound);
+            m_mdns_init = true;
+            Serial.println("MDNS is running.");
+        }
+        if (m_mdns_init)
+        {
+            m_mdns.run();
+        }
+    }
+
+    void resolveHost(const char* const hostname)
+    {
+        if (m_mdns_init && !m_mdns.isResolvingName())
+        {
+            m_mdns.resolveName(hostname, 5000);
+        }
     }
 
     static const char* statusString(const uint8_t status)
     {
-        switch(status)
+        switch (status)
         {
-            case WL_NO_SHIELD:
-                return "WL_NO_SHIELD";
-            case WL_IDLE_STATUS:
-                return "WL_IDLE_STATUS";
-            case WL_NO_SSID_AVAIL:
-                return "WL_NO_SSID_AVAIL";
-            case WL_SCAN_COMPLETED:
-                return "WL_SCAN_COMPLETED";
-            case WL_CONNECTED:
-                return "WL_CONNECTED";
-            case WL_CONNECT_FAILED:
-                return "WL_CONNECT_FAILED";
-            case WL_CONNECTION_LOST:
-                return "WL_CONNECTION_LOST";
-            case WL_DISCONNECTED:
-                return "WL_DISCONNECTED";
-            case WL_AP_LISTENING:
-                return "WL_AP_LISTENING";
-            case WL_AP_CONNECTED:
-                return "WL_AP_CONNECTED";
-            case WL_AP_FAILED:
-                return "WL_AP_FAILED";
-            case WL_PROVISIONING:
-                return "WL_PROVISIONING";
-            case WL_PROVISIONING_FAILED:
-                return "WL_PROVISIONING_FAILED";
-            default:
-                return "(unknown status)";
+        case WL_NO_SHIELD:
+            return "WL_NO_SHIELD";
+        case WL_IDLE_STATUS:
+            return "WL_IDLE_STATUS";
+        case WL_NO_SSID_AVAIL:
+            return "WL_NO_SSID_AVAIL";
+        case WL_SCAN_COMPLETED:
+            return "WL_SCAN_COMPLETED";
+        case WL_CONNECTED:
+            return "WL_CONNECTED";
+        case WL_CONNECT_FAILED:
+            return "WL_CONNECT_FAILED";
+        case WL_CONNECTION_LOST:
+            return "WL_CONNECTION_LOST";
+        case WL_DISCONNECTED:
+            return "WL_DISCONNECTED";
+        case WL_AP_LISTENING:
+            return "WL_AP_LISTENING";
+        case WL_AP_CONNECTED:
+            return "WL_AP_CONNECTED";
+        case WL_AP_FAILED:
+            return "WL_AP_FAILED";
+        case WL_PROVISIONING:
+            return "WL_PROVISIONING";
+        case WL_PROVISIONING_FAILED:
+            return "WL_PROVISIONING_FAILED";
+        default:
+            return "(unknown status)";
         }
     }
+
 private:
-    char m_ssid[MaxSSIDLen+1];
-    char m_pass[MaxPassLen+1];
+    WiFiUDP m_udp;
+    MDNS    m_mdns;
+    bool    m_mdns_init;
 };
 
-} // namespace BotanyNet
+}  // namespace BotanyNet
+
+#endif // BOTANYNET_HOMENET_INCLUDED_H

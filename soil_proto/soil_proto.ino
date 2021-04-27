@@ -33,6 +33,7 @@
 //  SOFTWARE.
 //
 
+#include <type_traits>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SharpMem.h>
 #include "SHT1x.h"
@@ -47,7 +48,9 @@
 // | NETWORKING
 // +--------------------------------------------------------------------------+
 
-BotanyNet::HomeNet homenet(SECRET_SSID, SECRET_SSID);
+// To setup access to wifi use the arduino ConnectWithWPA example once. This will
+// write the SSID and key into NVM.
+BotanyNet::HomeNet homenet;
 
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
@@ -76,7 +79,7 @@ SHT1x sht1x(11, 12);
 
 BotanyNet::SoilProbe probe(A0, 6);
 
-BotanyNet::Node bnclient(mqttClient, MQTT_BROKER, MQTT_PORT);
+BotanyNet::Node bnclient(homenet, mqttClient, MQTT_BROKER, MQTT_PORT);
 
 // +--------------------------------------------------------------------------+
 
@@ -101,32 +104,133 @@ void display_value(int soil, float humidity, float temp)
 }
 
 // +--------------------------------------------------------------------------+
+// | SKETCH
+// +--------------------------------------------------------------------------+
+
+enum class SketchState : int
+{
+    Initializing = 0,
+    WaitingForLan = 1,
+    Online = 2,
+    WaitingForMqtt = 3,
+    BotnetOnline = 4
+};
+
+static SketchState state = SketchState::Initializing;
+
+void checkLan(const unsigned long now_millis)
+{
+    (void)now_millis;
+    homenet.service();
+    if (homenet.getStatus() != WL_CONNECTED)
+    {
+        Serial.println("LAN is not connected. Starting over...");
+        homenet.printStatus();
+        state = SketchState::Initializing;
+    }
+}
+
+void handleWaitingForLan(const unsigned long now_millis)
+{
+    (void)now_millis;
+    const uint8_t wifi_status = homenet.getStatus();
+    if (wifi_status != WL_CONNECTED && state == SketchState::Initializing)
+    {
+        Serial.println("Connecting to LAN...");
+        const int result = homenet.connect();
+        Serial.print("Connection result (");
+        Serial.print(result);
+        Serial.println(')');
+        state = SketchState::WaitingForLan;
+    }
+    else if (wifi_status == WL_CONNECTED)
+    {
+        Serial.println("Connected to LAN.");
+        homenet.printStatus();
+        homenet.printCurrentNet();
+        homenet.printWifiData();
+        state = SketchState::Online;
+    }
+    else
+    {
+        homenet.printStatus();
+        Serial.print("wifi not connected (");
+        Serial.print(wifi_status);
+        Serial.println(")...");
+        delay(1000);
+    }
+}
+
+void checkMqtt(const unsigned long now_millis)
+{
+    (void)now_millis;
+    if (state == SketchState::BotnetOnline && !bnclient.connected())
+    {
+        Serial.println("MQTT connect was closed. Reconnecting...");
+        state = SketchState::Online;
+    }
+}
+
+void handleWaitingForMqtt(const unsigned long now_millis)
+{
+    (void)now_millis;
+    if (state == SketchState::Online)
+    {
+        Serial.println("Trying to connect to botnet...");
+        const int connection_result = bnclient.connect();
+        if (connection_result == MQTT_SUCCESS)
+        {
+            state = SketchState::WaitingForMqtt;
+        }
+        else
+        {
+            state = SketchState::WaitingForMqtt;
+            Serial.print("MQTT connection failed! Error code = ");
+            Serial.println(connection_result);
+            delay(1500);
+        }
+    }
+    else
+    {
+        // TODO: if connected then advance state.
+    }
+}
+
+static unsigned long last_update_at_millis = 0;
+
+void runBotnet(const unsigned long now_millis)
+{
+    if (now_millis - last_update_at_millis > 1000)
+    {
+        Serial.println("Reading...");
+        const float humidity = sht1x.readHumidity();
+        const int soil = probe.readSoil();
+        const float temperature_celcius = sht1x.readTemperatureC();
+        display_value(soil, humidity, temperature_celcius);
+        bnclient.sendSoilHumidity(humidity);
+    }
+    delay(100);
+}
+
+// +--------------------------------------------------------------------------+
 // | ARDUINO
 // +--------------------------------------------------------------------------+
- 
+
 void setup(void)
 {
     Serial.begin(115200);
     while (!Serial)
     {
-        delay(500);
+        delay(100);
     }
-    Serial.println("Hello!");
-
-    // Connect to wifi
-    homenet.connect();
+    Serial.print("Starting prototype botanynet node ");
+    Serial.println(BOTNET_NODEID);
 
     // start & clear the display
     display.begin();
     display.clearDisplay();
     display.setRotation(2);
     display.cp437(true);
-
-    Serial.println("started?");
-
-    homenet.printCurrentNet();
-    homenet.printWifiData();
-    homenet.printStatus();
 
     display.setTextSize(5);
     display.setTextColor(BLACK);
@@ -136,10 +240,39 @@ void setup(void)
     display.println("...");
 
     display.refresh();
+
+    Serial.println("display cleared...");
 }
 
 void loop(void)
 {
-    display_value(probe.read_soil(), sht1x.readHumidity(), sht1x.readTemperatureC());
-    delay(500);
+    const unsigned long now_millis = millis();
+    checkLan(now_millis);
+    checkMqtt(now_millis);
+    switch(state)
+    {
+        case SketchState::Initializing:
+        case SketchState::WaitingForLan:
+        {
+            handleWaitingForLan(now_millis);
+        }
+        break;
+        case SketchState::Online:
+        case SketchState::WaitingForMqtt:
+        {
+            handleWaitingForMqtt(now_millis);
+        }
+        break;
+        case SketchState::BotnetOnline:
+        {
+            runBotnet(now_millis);
+        }
+        break;
+        default:
+        {
+            Serial.print("ERROR: unknown state encountered ");
+            Serial.println(static_cast<std::underlying_type<SketchState>::type>(state));
+            while(1){}
+        }
+    }
 }
