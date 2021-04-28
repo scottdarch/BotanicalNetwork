@@ -47,13 +47,13 @@ class Node
 public:
     static constexpr size_t MaxBrokerUrlLen = 24u;
 
-    Node(HomeNet& network, MqttClient& client, const char* const broker, int port)
+    Node(HomeNet& network, const char* const broker, int port)
         : m_net(network)
-        , m_mqtt_client(client)
+        , m_mqtt_client(network.getClient())
         , m_mqtt_broker{0}
         , m_mqtt_broker_port(port)
         , m_hostname_lookup_started(false)
-        , m_mqtt_client_address()
+        , m_mqtt_client_address(INADDR_NONE)
         , m_should_connect(false)
     {
         if (broker)
@@ -117,7 +117,15 @@ public:
     void service(unsigned long now_millis)
     {
         (void)now_millis;
-        if (!m_hostname_lookup_started)
+        // TODO: hostname TTL
+        if (m_mqtt_client_address != INADDR_NONE)
+        {
+            if (m_should_connect)
+            {
+                connectNow();
+            }
+        }
+        else if (!m_hostname_lookup_started)
         {
             if (HomeNet::Result::SUCCESS == m_net.startResolvingHostname(m_mqtt_broker))
             {
@@ -147,6 +155,7 @@ private:
         {
             Serial.print("Connected to MQTT broker ");
             Serial.println(m_mqtt_broker);
+            m_should_connect = false;
         }
     }
 

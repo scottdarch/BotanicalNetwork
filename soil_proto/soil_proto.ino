@@ -34,15 +34,37 @@
 //
 
 #include <type_traits>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SharpMem.h>
-#include "SHT1x.h"
-#include "arduino_secrets.h"
+#include <SHT1x.h>
 #include <ArduinoMqttClient.h>
-#include <MqttClient.h>
+#include <LowPower.h>
+#include <RTCZero.h>
+
 #include "HomeNet.h"
 #include "SoilProbe.h"
 #include "BotanyNet.h"
+
+
+// +--------------------------------------------------------------------------+
+// | CONFIGURATION
+// +--------------------------------------------------------------------------+
+// We need to wait for a bit so we have a chance to attach a serial console or 
+// start programming a firmware. Once we start sleeping the device becomes
+// unavailable for either.
+constexpr unsigned long StartupDelayMillis = 10000;
+constexpr uint8_t SampleDelaySec = 10;
+static_assert(SampleDelaySec < 60, "We're assuming that we are sleeping < 60 seconds.");
+
+constexpr uint8_t BotnetNodeId = 1;
+constexpr const char* BotnetBroker = "botnet";
+constexpr int BotnetPort = 1883;
+
+constexpr int PinSht1Data = 11;
+constexpr int PinSht1Clk = 12;
+constexpr int PinSoilProbePower = 6;
+constexpr int PinSoilProbeADC = A0;
+
+// For debugging set to true to disable sleep and keep the serial console attached.
+constexpr bool DisableSleep = true;
 
 // +--------------------------------------------------------------------------+
 // | NETWORKING
@@ -56,59 +78,23 @@ BotanyNet::HomeNet BotanyNet::HomeNet::singleton;
 // alias the singleton to something nice to look at.
 constexpr BotanyNet::HomeNet& homenet = BotanyNet::HomeNet::singleton;
 
-// TODO: exchange this between the HomeNet and Node classes. Starage for the
-//       wifi should be in homenet and storage for the mqtt client should be
-//       in Node.
-WiFiClient wifiClient;
-MqttClient mqttClient(wifiClient);
+// Setup our BotanyNet client.
+BotanyNet::Node bnclient(homenet, BotnetBroker, BotnetPort);
+
+// We keep time on our sensors both because botnet asks sensors to report
+// what time they think it is and because we need the RTC interrupt to wake
+// up from low-power standby.
+RTCZero rtc;
 
 // +--------------------------------------------------------------------------+
 // | SENSORS AND DISPLAYS
 // +--------------------------------------------------------------------------+
-// any pins can be used
-#define SHARP_SCK 9
-#define SHARP_MOSI 8
-#define SHARP_SS 7
 
-// Set the size of the display here, e.g. 144x168!
-Adafruit_SharpMem display(SHARP_SCK, SHARP_MOSI, SHARP_SS, 96, 96);
-// The currently-available SHARP Memory Display (144x168 pixels)
-// requires > 4K of microcontroller RAM; it WILL NOT WORK on Arduino Uno
-// or other <4K "classic" devices!  The original display (96x96 pixels)
-// does work there, but is no longer produced.
+// Soil humidity and temperature sensor (fancy)
+SHT1x sht1x(PinSht1Data, PinSht1Clk);
 
-// +--------------------------------------------------------------------------+
-
-SHT1x sht1x(11, 12);
-
-#define BLACK 0
-#define WHITE 1
-
-BotanyNet::SoilProbe probe(A0, 6);
-
-BotanyNet::Node bnclient(homenet, mqttClient, MQTT_BROKER, MQTT_PORT);
-
-// +--------------------------------------------------------------------------+
-
-void display_value(int soil, float humidity, float temp)
-{
-    display.setTextSize(1);
-    display.setTextColor(BLACK);
-    display.clearDisplay();
-    display.setCursor(0, 0);
-
-    display.print("s: ");
-    display.println(soil);
-
-    display.print("h: ");
-    display.print(humidity);
-    display.println('%');
-
-    display.print("t: ");
-    display.print(temp);
-    display.println('c');
-    display.refresh();
-}
+// Soil probe using resistence (cheapo)
+BotanyNet::SoilProbe probe(PinSoilProbeADC, PinSoilProbePower);
 
 // +--------------------------------------------------------------------------+
 // | SKETCH
@@ -164,7 +150,10 @@ void handleWaitingForLan(const unsigned long now_millis)
         Serial.print("wifi not connected (");
         Serial.print(wifi_status);
         Serial.println(")...");
-        delay(1000);
+        digitalWrite(LED_BUILTIN, 1);
+        delay(250);
+        digitalWrite(LED_BUILTIN, 0);
+        delay(250);
     }
 }
 
@@ -197,6 +186,11 @@ void handleWaitingForMqtt(const unsigned long now_millis)
     }
 }
 
+void alarmWake()
+{
+    digitalWrite(LED_BUILTIN, 1);
+}
+
 static unsigned long last_update_at_millis = 0;
 
 void runBotnet(const unsigned long now_millis)
@@ -207,12 +201,26 @@ void runBotnet(const unsigned long now_millis)
         const float humidity = sht1x.readHumidity();
         const int soil = probe.readSoil();
         const float temperature_celcius = sht1x.readTemperatureC();
-        display_value(soil, humidity, temperature_celcius);
+        Serial.println(humidity);
         bnclient.sendHumidity(humidity);
         bnclient.sendTemperatureC(temperature_celcius);
         bnclient.sendFloat("botanynet/soilr", static_cast<float>(soil));
+        const uint8_t seconds = rtc.getSeconds();
+        bnclient.sendFloat("botanynet/time", static_cast<float>(seconds));
+
     }
-    delay(2000);
+    digitalWrite(LED_BUILTIN, 0);
+    if (DisableSleep)
+    {
+        delay(SampleDelaySec * 1000);
+        digitalWrite(LED_BUILTIN, 1);
+    }
+    else
+    {
+        const uint8_t now_sec = rtc.getSeconds();
+        rtc.setAlarmSeconds((now_sec + SampleDelaySec) % 60);
+        LowPower.standby();
+    }
 }
 
 // +--------------------------------------------------------------------------+
@@ -222,29 +230,29 @@ void runBotnet(const unsigned long now_millis)
 void setup(void)
 {
     Serial.begin(115200);
-    while (!Serial)
+    const unsigned long delay_start = millis();
+    while (!Serial && (delay_start + StartupDelayMillis) > millis())
     {
-        delay(100);
+        digitalWrite(LED_BUILTIN, 1);
+        delay(500);
+        digitalWrite(LED_BUILTIN, 0);
+        delay(500);
     }
     Serial.print("Starting prototype botanynet node ");
-    Serial.println(BOTNET_NODEID);
+    Serial.println(BotnetNodeId);
 
-    // start & clear the display
-    display.begin();
-    display.clearDisplay();
-    display.setRotation(2);
-    display.cp437(true);
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, 0);
 
-    display.setTextSize(5);
-    display.setTextColor(BLACK);
-    display.clearDisplay();
-    display.setCursor(0, 0);
+    rtc.begin();
 
-    display.println("...");
+    if (!DisableSleep)
+    {
+        rtc.enableAlarm(rtc.MATCH_SS);
+        rtc.attachInterrupt(alarmWake);
+    }
 
-    display.refresh();
-
-    Serial.println("display cleared...");
+    Serial.println("Sensor started...");
 }
 
 void loop(void)

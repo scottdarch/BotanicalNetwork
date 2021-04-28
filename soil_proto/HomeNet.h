@@ -42,6 +42,7 @@
 #include <WiFiUdp.h>
 #include <algorithm>
 #include <ArduinoMDNS.h>
+#include <NTPClient.h>
 
 #ifndef BOTANYNET_XSTR
 #    define BOTANYNET_XSTR(s) BOTANYNET_STR(s)
@@ -57,7 +58,9 @@ namespace BotanyNet
 class HomeNet final
 {
     HomeNet()
-        : m_udp()
+        : m_wifi_client()
+        , m_udp()
+        , m_ntp(m_udp)
         , m_mdns(m_udp)
         , m_mdns_init(false)
     {
@@ -177,7 +180,12 @@ public:
             m_mdns.begin(WiFi.localIP(), HomeNet::NodeName);
             m_mdns.setNameResolvedCallback(HomeNet::mdnsCallback);
             m_mdns_init = true;
+            // Start NTP at the same time.
+            m_ntp.begin();
+            m_ntp.forceUpdate();
             Serial.println("MDNS is running.");
+            Serial.print("NTP time is ");
+            Serial.println(m_ntp.getFormattedTime());
         }
         if (m_mdns_init)
         {
@@ -265,6 +273,11 @@ public:
         }
     }
 
+    arduino::Client& getClient()
+    {
+        return m_wifi_client;
+    }
+
     /**
      * You must declare the storage space for this in your sketch. For example:
      * ```
@@ -314,7 +327,9 @@ private:
         HomeNet::singleton.onNameFound(name, ip);
     }
 
+    WiFiClient     m_wifi_client;
     WiFiUDP        m_udp;
+    NTPClient      m_ntp;
     MDNS           m_mdns;
     bool           m_mdns_init;
     HostNameRecord m_hostname_record;
