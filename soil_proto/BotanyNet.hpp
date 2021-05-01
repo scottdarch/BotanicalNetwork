@@ -1,14 +1,6 @@
-// ========================================================
-// ========  ==============================================
-// ========  ==============================================
-// ========  =================  =======================  ==
-// =    ===  ===   ===  = ===    =======  = ====   ===    =
-// =  =  ==  ==  =  ==     ===  ========     ==  =  ===  ==
-// =  =  ==  =====  ==  =  ===  ========  =  ==     ===  ==
-// =    ===  ===    ==  =  ===  ========  =  ==  ======  ==
-// =  =====  ==  =  ==  =  ===  ========  =  ==  =  ===  ==
-// =  =====  ===    ==  =  ===   =======  =  ===   ====   =
-// ========================================================
+//              \.
+// BOT(any)NET  . -
+// ------------.---------------------------------------------------------------
 //
 //  MIT License
 //
@@ -37,24 +29,54 @@
 
 #include <MqttClient.h>
 #include <algorithm>
-#include "HomeNet.h"
+#include <cinttypes>
+#include "HomeNet.hpp"
 
 namespace BotanyNet
 {
 
+struct MonotonicClock
+{
+    virtual std::uint64_t getUptimeSeconds() const = 0;
+
+protected:
+    virtual ~MonotonicClock() = default;
+};
+
+/**
+ * A node in our BOT(any)NET. Botnet notes are MQTT clients that chirp json.
+ */
 class Node
 {
 public:
     static constexpr size_t MaxBrokerUrlLen = 24u;
+    static constexpr const char* BotnetChirpTemplate = "    {\
+        \"node\": %" PRIu16 ",\
+        \"diagnostic\": {\
+            \"status\": %" PRIu16 ",\
+            \"battery\": 255,\
+            \"reserved_24\": 0,\
+            \"uptime_sec\": 0,\
+        }.\
+        \"data\": \"%s\"\
+    }";
+    static constexpr size_t MaxTopicNameLen = 12u;
+    static constexpr size_t MaxDataLen = 128u;
+    static constexpr size_t BotnetChipBufferSize = strlen(BotnetChirpTemplate) + 13 + MaxDataLen + 1;
 
-    Node(HomeNet& network, const char* const broker, int port)
-        : m_net(network)
+    Node(std::uint16_t nodeid, MonotonicClock& clock, HomeNet& network, const char* const broker, int port)
+        : m_nodeid(nodeid)
+        , m_clock(clock)
+        , m_net(network)
         , m_mqtt_client(network.getClient())
         , m_mqtt_broker{0}
         , m_mqtt_broker_port(port)
         , m_hostname_lookup_started(false)
         , m_mqtt_client_address(INADDR_NONE)
         , m_should_connect(false)
+        , m_topic_buffer{0}
+        , m_data_buffer{0}
+        , m_chirp_buffer{0}
     {
         if (broker)
         {
@@ -83,30 +105,58 @@ public:
 
     void sendHumidity(float humidity)
     {
-        sendFloat("botanynet/humidity", humidity);
+        sendFloat("humidity", humidity);
     }
 
     void sendTemperatureC(float degressC)
     {
-        sendFloat("botanynet/tempc", degressC);
+        sendFloat("tempc", degressC);
     }
 
     void sendFloat(const char* const topic, float value)
     {
-        // TODO: control topic prefix internally
-        // TODO: json structure including nodeid
-        // TODO: ensure is compatible with homeassistant plant cards.
+        m_data_buffer[0] = 0;
+        const int written_or_error = snprintf(m_data_buffer, MaxDataLen, "%f", value);
+        // TODO: handle errors as node status bits
+        if (written_or_error > 0)
+        {
+            sendData(topic, m_data_buffer);
+        }
+    }
+
+    void sendData(const char* const topic, const char* const data)
+    {
+        if (!topic || strlen(topic) > MaxTopicNameLen)
+        {
+            return;
+        }
+        if (!data || strlen(data) > MaxDataLen)
+        {
+            return;
+        }
+
+        // TODO, handle buffer overflow
+        snprintf(m_topic_buffer, MaxTopicNameLen + 6, "btnt/%s", topic);
+        snprintf(m_chirp_buffer,
+                 BotnetChipBufferSize,
+                 BotnetChirpTemplate,
+                 m_nodeid,
+                 0u,
+                 data);
+        
+        Serial.println(m_chirp_buffer);
+
         if (!m_mqtt_client.connected())
         {
             return;
         }
-        if (!m_mqtt_client.beginMessage(topic))
+        if (!m_mqtt_client.beginMessage(m_topic_buffer))
         {
             Serial.println("beginMessage failed!");
         }
         else
         {
-            m_mqtt_client.print(value);
+            m_mqtt_client.print(m_chirp_buffer);
             if (!m_mqtt_client.endMessage())
             {
                 Serial.println("endMessage failed!");
@@ -142,6 +192,7 @@ public:
     }
 
 private:
+
     void connectNow()
     {
         if (!m_mqtt_client.connect(m_mqtt_client_address, m_mqtt_broker_port))
@@ -159,6 +210,8 @@ private:
         }
     }
 
+    const std::uint16_t m_nodeid;
+    MonotonicClock& m_clock;
     HomeNet&   m_net;
     MqttClient m_mqtt_client;
     char       m_mqtt_broker[MaxBrokerUrlLen + 1];
@@ -166,6 +219,9 @@ private:
     bool       m_hostname_lookup_started;
     IPAddress  m_mqtt_client_address;
     bool       m_should_connect;
+    char       m_topic_buffer[MaxTopicNameLen + 6];
+    char       m_data_buffer[MaxDataLen];
+    char       m_chirp_buffer[BotnetChipBufferSize];
 };
 
 }  // namespace BotanyNet

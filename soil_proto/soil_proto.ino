@@ -1,14 +1,6 @@
-// ========================================================
-// ========  ==============================================
-// ========  ==============================================
-// ========  =================  =======================  ==
-// =    ===  ===   ===  = ===    =======  = ====   ===    =
-// =  =  ==  ==  =  ==     ===  ========     ==  =  ===  ==
-// =  =  ==  =====  ==  =  ===  ========  =  ==     ===  ==
-// =    ===  ===    ==  =  ===  ========  =  ==  ======  ==
-// =  =====  ==  =  ==  =  ===  ========  =  ==  =  ===  ==
-// =  =====  ===    ==  =  ===   =======  =  ===   ====   =
-// ========================================================
+//              \.
+// BOT(any)NET  . -
+// ------------.---------------------------------------------------------------
 //
 //  MIT License
 //
@@ -34,14 +26,14 @@
 //
 
 #include <type_traits>
+#include <Arduino.h>
 #include <SHT1x.h>
 #include <ArduinoMqttClient.h>
-#include <LowPower.h>
 #include <RTCZero.h>
 
-#include "HomeNet.h"
-#include "SoilProbe.h"
-#include "BotanyNet.h"
+#include "HomeNet.hpp"
+#include "SoilProbe.hpp"
+#include "BotanyNet.hpp"
 
 
 // +--------------------------------------------------------------------------+
@@ -78,13 +70,33 @@ BotanyNet::HomeNet BotanyNet::HomeNet::singleton;
 // alias the singleton to something nice to look at.
 constexpr BotanyNet::HomeNet& homenet = BotanyNet::HomeNet::singleton;
 
-// Setup our BotanyNet client.
-BotanyNet::Node bnclient(homenet, BotnetBroker, BotnetPort);
-
-// We keep time on our sensors both because botnet asks sensors to report
-// what time they think it is and because we need the RTC interrupt to wake
-// up from low-power standby.
+// We keep time on our sensors because we need the RTC interrupt to wake
+// up from low-power standby. This does not need to be the correct world time
+// and can simply be "uptime millis" (etc).
 RTCZero rtc;
+
+class RTCMonotonicClock : public BotanyNet::MonotonicClock
+{
+public:
+    RTCMonotonicClock(RTCZero& rtc)
+        : m_rtc(rtc)
+    {}
+
+    virtual std::uint64_t getUptimeSeconds() const override final
+    {
+        return m_rtc.getEpoch();
+    }
+
+    static RTCMonotonicClock singleton;
+private:
+    RTCZero& m_rtc;
+};
+
+RTCMonotonicClock RTCMonotonicClock::singleton(rtc);
+
+// Setup our BotanyNet client.
+BotanyNet::Node bnclient(BotnetNodeId, RTCMonotonicClock::singleton, homenet, BotnetBroker, BotnetPort);
+
 
 // +--------------------------------------------------------------------------+
 // | SENSORS AND DISPLAYS
@@ -204,9 +216,7 @@ void runBotnet(const unsigned long now_millis)
         Serial.println(humidity);
         bnclient.sendHumidity(humidity);
         bnclient.sendTemperatureC(temperature_celcius);
-        bnclient.sendFloat("botanynet/soilr", static_cast<float>(soil));
-        const uint8_t seconds = rtc.getSeconds();
-        bnclient.sendFloat("botanynet/time", static_cast<float>(seconds));
+        bnclient.sendFloat("soilr", static_cast<float>(soil));
 
     }
     digitalWrite(LED_BUILTIN, 0);
@@ -219,7 +229,7 @@ void runBotnet(const unsigned long now_millis)
     {
         const uint8_t now_sec = rtc.getSeconds();
         rtc.setAlarmSeconds((now_sec + SampleDelaySec) % 60);
-        LowPower.standby();
+        rtc.standbyMode();
     }
 }
 
@@ -238,7 +248,7 @@ void setup(void)
         digitalWrite(LED_BUILTIN, 0);
         delay(500);
     }
-    Serial.print("Starting prototype botanynet node ");
+    Serial.print("Starting prototype bot(any)net node ");
     Serial.println(BotnetNodeId);
 
     pinMode(LED_BUILTIN, OUTPUT);
