@@ -31,32 +31,10 @@
 #include <ArduinoMqttClient.h>
 #include <RTCZero.h>
 
+#include "config.hpp"
 #include "HomeNet.hpp"
 #include "SoilProbe.hpp"
 #include "BotanyNet.hpp"
-
-
-// +--------------------------------------------------------------------------+
-// | CONFIGURATION
-// +--------------------------------------------------------------------------+
-// We need to wait for a bit so we have a chance to attach a serial console or 
-// start programming a firmware. Once we start sleeping the device becomes
-// unavailable for either.
-constexpr unsigned long StartupDelayMillis = 10000;
-constexpr uint8_t SampleDelaySec = 10;
-static_assert(SampleDelaySec < 60, "We're assuming that we are sleeping < 60 seconds.");
-
-constexpr uint8_t BotnetNodeId = 1;
-constexpr const char* BotnetBroker = "botnet";
-constexpr int BotnetPort = 1883;
-
-constexpr int PinSht1Data = 11;
-constexpr int PinSht1Clk = 12;
-constexpr int PinSoilProbePower = 6;
-constexpr int PinSoilProbeADC = A0;
-
-// For debugging set to true to disable sleep and keep the serial console attached.
-constexpr bool DisableSleep = true;
 
 // +--------------------------------------------------------------------------+
 // | NETWORKING
@@ -70,33 +48,78 @@ BotanyNet::HomeNet BotanyNet::HomeNet::singleton;
 // alias the singleton to something nice to look at.
 constexpr BotanyNet::HomeNet& homenet = BotanyNet::HomeNet::singleton;
 
-// We keep time on our sensors because we need the RTC interrupt to wake
-// up from low-power standby. This does not need to be the correct world time
-// and can simply be "uptime millis" (etc).
-RTCZero rtc;
+// +--------------------------------------------------------------------------+
+// | TIME KEEPING AND POWER
+// +--------------------------------------------------------------------------+
+void alarmWake()
+{
+    __NOP;
+}
 
+/**
+ * Implement the Bot(any)Net clock using RTCZero.
+ */
 class RTCMonotonicClock : public BotanyNet::MonotonicClock
 {
 public:
-    RTCMonotonicClock(RTCZero& rtc)
-        : m_rtc(rtc)
+    RTCMonotonicClock(bool enableLowPowerSleep)
+        : m_rtc()
+        , m_low_power_sleep(enableLowPowerSleep)
     {}
 
-    virtual std::uint64_t getUptimeSeconds() const override final
+    void begin()
+    {
+        m_rtc.begin(true);
+
+        if (m_low_power_sleep)
+        {
+            m_rtc.enableAlarm(m_rtc.MATCH_SS);
+            m_rtc.attachInterrupt(alarmWake);
+        }
+    }
+
+    void sleep(const uint8_t sleepTimeSeconds)
+    {
+        Serial.print("Sleep for ");
+        Serial.print(sleepTimeSeconds);
+        Serial.println("sec.");
+
+        if (!m_low_power_sleep)
+        {
+            delay(sleepTimeSeconds * 1000);
+            digitalWrite(LED_BUILTIN, 1);
+        }
+        else
+        {
+            const uint8_t now_sec = m_rtc.getSeconds();
+            m_rtc.setAlarmSeconds((now_sec + sleepTimeSeconds) % 60);
+            m_rtc.standbyMode();
+        }
+    }
+
+    // +----------------------------------------------------------------------+
+    // | BotanyNet::MonotonicClock
+    // +----------------------------------------------------------------------+
+    virtual unsigned long getUptimeSeconds() override final
     {
         return m_rtc.getEpoch();
     }
 
+    // +----------------------------------------------------------------------+
     static RTCMonotonicClock singleton;
+
 private:
-    RTCZero& m_rtc;
+    RTCZero m_rtc;
+    const bool m_low_power_sleep;
 };
 
-RTCMonotonicClock RTCMonotonicClock::singleton(rtc);
+RTCMonotonicClock RTCMonotonicClock::singleton(!DisableSleep);
+
+// Nice name for our clock.
+constexpr RTCMonotonicClock& clock = RTCMonotonicClock::singleton;
 
 // Setup our BotanyNet client.
 BotanyNet::Node bnclient(BotnetNodeId, RTCMonotonicClock::singleton, homenet, BotnetBroker, BotnetPort);
-
 
 // +--------------------------------------------------------------------------+
 // | SENSORS AND DISPLAYS
@@ -114,11 +137,11 @@ BotanyNet::SoilProbe probe(PinSoilProbeADC, PinSoilProbePower);
 
 enum class SketchState : int
 {
-    Initializing = 0,
-    WaitingForLan = 1,
-    Online = 2,
+    Initializing   = 0,
+    WaitingForLan  = 1,
+    Online         = 2,
     WaitingForMqtt = 3,
-    BotnetOnline = 4
+    BotnetOnline   = 4
 };
 
 static SketchState state = SketchState::Initializing;
@@ -129,7 +152,7 @@ void checkLan(const unsigned long now_millis)
     if (homenet.getStatus() != WL_CONNECTED)
     {
         Serial.println("LAN is not connected. Starting over...");
-        homenet.printStatus();
+        homenet.printStatus(Serial);
         bnclient.disconnect();
         state = SketchState::Initializing;
     }
@@ -137,7 +160,7 @@ void checkLan(const unsigned long now_millis)
 
 void handleWaitingForLan(const unsigned long now_millis)
 {
-    (void)now_millis;
+    (void) now_millis;
     const uint8_t wifi_status = homenet.getStatus();
     if (wifi_status != WL_CONNECTED && state == SketchState::Initializing)
     {
@@ -151,14 +174,14 @@ void handleWaitingForLan(const unsigned long now_millis)
     else if (wifi_status == WL_CONNECTED)
     {
         Serial.println("Connected to LAN.");
-        homenet.printStatus();
-        homenet.printCurrentNet();
-        homenet.printWifiData();
+        homenet.printStatus(Serial);
+        homenet.printCurrentNet(Serial);
+        homenet.printWifiData(Serial);
         state = SketchState::Online;
     }
     else
     {
-        homenet.printStatus();
+        homenet.printStatus(Serial);
         Serial.print("wifi not connected (");
         Serial.print(wifi_status);
         Serial.println(")...");
@@ -181,7 +204,7 @@ void checkMqtt(const unsigned long now_millis)
 
 void handleWaitingForMqtt(const unsigned long now_millis)
 {
-    (void)now_millis;
+    (void) now_millis;
     if (state == SketchState::Online)
     {
         Serial.println("Trying to connect to botnet...");
@@ -198,11 +221,6 @@ void handleWaitingForMqtt(const unsigned long now_millis)
     }
 }
 
-void alarmWake()
-{
-    digitalWrite(LED_BUILTIN, 1);
-}
-
 static unsigned long last_update_at_millis = 0;
 
 void runBotnet(const unsigned long now_millis)
@@ -210,27 +228,16 @@ void runBotnet(const unsigned long now_millis)
     if (now_millis - last_update_at_millis > 1000)
     {
         Serial.println("Reading...");
-        const float humidity = sht1x.readHumidity();
-        const int soil = probe.readSoil();
+        const float humidity            = sht1x.readHumidity();
+        const int   soil                = probe.readSoil();
         const float temperature_celcius = sht1x.readTemperatureC();
-        Serial.println(humidity);
         bnclient.sendHumidity(humidity);
         bnclient.sendTemperatureC(temperature_celcius);
         bnclient.sendFloat("soilr", static_cast<float>(soil));
-
     }
     digitalWrite(LED_BUILTIN, 0);
-    if (DisableSleep)
-    {
-        delay(SampleDelaySec * 1000);
-        digitalWrite(LED_BUILTIN, 1);
-    }
-    else
-    {
-        const uint8_t now_sec = rtc.getSeconds();
-        rtc.setAlarmSeconds((now_sec + SampleDelaySec) % 60);
-        rtc.standbyMode();
-    }
+    clock.sleep(SampleDelaySec);
+    digitalWrite(LED_BUILTIN, 1);
 }
 
 // +--------------------------------------------------------------------------+
@@ -240,6 +247,7 @@ void runBotnet(const unsigned long now_millis)
 void setup(void)
 {
     Serial.begin(115200);
+#ifdef BOTNET_ENABLE_SERIAL_INTERNAL_DEBUG
     const unsigned long delay_start = millis();
     while (!Serial && (delay_start + StartupDelayMillis) > millis())
     {
@@ -248,19 +256,14 @@ void setup(void)
         digitalWrite(LED_BUILTIN, 0);
         delay(500);
     }
+#endif
     Serial.print("Starting prototype bot(any)net node ");
     Serial.println(BotnetNodeId);
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
-    rtc.begin();
-
-    if (!DisableSleep)
-    {
-        rtc.enableAlarm(rtc.MATCH_SS);
-        rtc.attachInterrupt(alarmWake);
-    }
+    clock.begin();
 
     Serial.println("Sensor started...");
 }
@@ -270,30 +273,27 @@ void loop(void)
     const unsigned long now_millis = millis();
     checkLan(now_millis);
     checkMqtt(now_millis);
-    switch(state)
+    switch (state)
     {
-        case SketchState::Initializing:
-        case SketchState::WaitingForLan:
-        {
-            handleWaitingForLan(now_millis);
-        }
-        break;
-        case SketchState::Online:
-        case SketchState::WaitingForMqtt:
-        {
-            handleWaitingForMqtt(now_millis);
-        }
-        break;
-        case SketchState::BotnetOnline:
-        {
-            runBotnet(now_millis);
-        }
-        break;
-        default:
-        {
-            Serial.print("ERROR: unknown state encountered ");
-            Serial.println(static_cast<std::underlying_type<SketchState>::type>(state));
-            while(1){}
-        }
+    case SketchState::Initializing:
+    case SketchState::WaitingForLan: {
+        handleWaitingForLan(now_millis);
+    }
+    break;
+    case SketchState::Online:
+    case SketchState::WaitingForMqtt: {
+        handleWaitingForMqtt(now_millis);
+    }
+    break;
+    case SketchState::BotnetOnline: {
+        runBotnet(now_millis);
+    }
+    break;
+    default: {
+        Serial.print("ERROR: unknown state encountered ");
+        Serial.println(static_cast<std::underlying_type<SketchState>::type>(state));
+        while (1)
+        {}
+    }
     }
 }

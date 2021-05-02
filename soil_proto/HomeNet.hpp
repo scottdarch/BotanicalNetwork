@@ -96,73 +96,9 @@ public:
         return WiFi.begin();
     }
 
-    void printCurrentNet() const
-    {
-        // print the SSID of the network you're attached to:
-        Serial.print("SSID: ");
-        Serial.println(WiFi.SSID());
-
-        // print the MAC address of the router you're attached to:
-        byte bssid[6];
-        WiFi.BSSID(bssid);
-        Serial.print("BSSID: ");
-        Serial.print(bssid[5], HEX);
-        Serial.print(":");
-        Serial.print(bssid[4], HEX);
-        Serial.print(":");
-        Serial.print(bssid[3], HEX);
-        Serial.print(":");
-        Serial.print(bssid[2], HEX);
-        Serial.print(":");
-        Serial.print(bssid[1], HEX);
-        Serial.print(":");
-        Serial.println(bssid[0], HEX);
-
-        // print the received signal strength:
-        long rssi = WiFi.RSSI();
-        Serial.print("signal strength (RSSI):");
-        Serial.println(rssi);
-
-        // print the encryption type:
-        byte encryption = WiFi.encryptionType();
-        Serial.print("Encryption Type:");
-        Serial.println(encryption, HEX);
-        Serial.println();
-    }
-
-    void printWifiData() const
-    {
-        // print your WiFi shield's IP address:
-        IPAddress ip = WiFi.localIP();
-        Serial.print("IP Address: ");
-        Serial.println(ip);
-        Serial.println(ip);
-
-        // print your MAC address:
-        byte mac[6];
-        WiFi.macAddress(mac);
-        Serial.print("MAC address: ");
-        Serial.print(mac[5], HEX);
-        Serial.print(":");
-        Serial.print(mac[4], HEX);
-        Serial.print(":");
-        Serial.print(mac[3], HEX);
-        Serial.print(":");
-        Serial.print(mac[2], HEX);
-        Serial.print(":");
-        Serial.print(mac[1], HEX);
-        Serial.print(":");
-        Serial.println(mac[0], HEX);
-    }
-
     uint8_t getStatus() const
     {
         return WiFi.status();
-    }
-
-    void printStatus() const
-    {
-        Serial.println(statusString(WiFi.status()));
     }
 
     void service(unsigned long now_millis)
@@ -173,7 +109,7 @@ public:
             m_mdns.begin(WiFi.localIP(), HomeNet::NodeName);
             m_mdns.setNameResolvedCallback(HomeNet::mdnsCallback);
             m_mdns_init = true;
-            Serial.println("MDNS is running.");
+            BOTNET_SERIAL_DEBUG_PRINTLN("MDNS is running.");
         }
         if (m_mdns_init)
         {
@@ -226,6 +162,14 @@ public:
         }
     }
 
+    arduino::Client& getClient()
+    {
+        return m_wifi_client;
+    }
+
+    // +----------------------------------------------------------------------+
+    // | DEBUG FACILITIES
+    // +----------------------------------------------------------------------+
     static const char* statusString(const uint8_t status)
     {
         switch (status)
@@ -261,11 +205,73 @@ public:
         }
     }
 
-    arduino::Client& getClient()
+    void printCurrentNet(arduino::Stream& printto) const
     {
-        return m_wifi_client;
+        // print the SSID of the network you're attached to:
+        printto.print("SSID: ");
+        printto.println(WiFi.SSID());
+
+        // print the MAC address of the router you're attached to:
+        byte bssid[6];
+        WiFi.BSSID(bssid);
+        printto.print("BSSID: ");
+        printto.print(bssid[5], HEX);
+        printto.print(":");
+        printto.print(bssid[4], HEX);
+        printto.print(":");
+        printto.print(bssid[3], HEX);
+        printto.print(":");
+        printto.print(bssid[2], HEX);
+        printto.print(":");
+        printto.print(bssid[1], HEX);
+        printto.print(":");
+        printto.println(bssid[0], HEX);
+
+        // print the received signal strength:
+        long rssi = WiFi.RSSI();
+        printto.print("signal strength (RSSI):");
+        printto.println(rssi);
+
+        // print the encryption type:
+        byte encryption = WiFi.encryptionType();
+        printto.print("Encryption Type:");
+        printto.println(encryption, HEX);
+        printto.println();
     }
 
+    void printWifiData(arduino::Stream& printto) const
+    {
+        // print your WiFi shield's IP address:
+        IPAddress ip = WiFi.localIP();
+        printto.print("IP Address: ");
+        printto.println(ip);
+        printto.println(ip);
+
+        // print your MAC address:
+        byte mac[6];
+        WiFi.macAddress(mac);
+        printto.print("MAC address: ");
+        printto.print(mac[5], HEX);
+        printto.print(":");
+        printto.print(mac[4], HEX);
+        printto.print(":");
+        printto.print(mac[3], HEX);
+        printto.print(":");
+        printto.print(mac[2], HEX);
+        printto.print(":");
+        printto.print(mac[1], HEX);
+        printto.print(":");
+        printto.println(mac[0], HEX);
+    }
+
+    void printStatus(arduino::Stream& printto) const
+    {
+        printto.println(statusString(WiFi.status()));
+    }
+
+    // +----------------------------------------------------------------------+
+    // | SINGLETON
+    // +----------------------------------------------------------------------+
     /**
      * You must declare the storage space for this in your sketch. For example:
      * ```
@@ -286,27 +292,30 @@ public:
     static HomeNet singleton;
 
 private:
-    void onNameFound(const char* hostname, const IPAddress& ip)
+    int onNameFound(const char* hostname, const IPAddress& ip)
     {
         if (!hostname)
         {
-            Serial.println("Unknown error (name ptr was null?)");
+            BOTNET_SERIAL_DEBUG_PRINTLN("Unknown error (name ptr was null?)");
+            return -2;
         }
         else if (ip != INADDR_NONE)
         {
-            Serial.print("The IP address for '");
-            Serial.print(hostname);
-            Serial.print("' is ");
-            Serial.println(ip);
+            BOTNET_SERIAL_DEBUG_PRINT("The IP address for '");
+            BOTNET_SERIAL_DEBUG_PRINT(hostname);
+            BOTNET_SERIAL_DEBUG_PRINT("' is ");
+            BOTNET_SERIAL_DEBUG_PRINTLN(ip);
             const size_t hostNameLen = strlen(hostname);
             strncpy(m_hostname_record.hostname, hostname, std::min(hostNameLen, MaxHostNameLen) + 1);
             m_hostname_record.addr = ip;
+            return 0;
         }
         else
         {
-            Serial.print("Resolving '");
-            Serial.print(hostname);
-            Serial.println("' timed out.");
+            BOTNET_SERIAL_DEBUG_PRINT("Resolving '");
+            BOTNET_SERIAL_DEBUG_PRINT(hostname);
+            BOTNET_SERIAL_DEBUG_PRINTLN("' timed out.");
+            return -1;
         }
     }
 

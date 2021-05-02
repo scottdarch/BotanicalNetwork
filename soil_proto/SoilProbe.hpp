@@ -29,9 +29,10 @@
 
 #include <Arduino.h>
 
+#include "config.hpp"
+
 namespace BotanyNet
 {
-
 /**
  * Super-cheap soil probe from SparkFun (https://www.sparkfun.com/products/13322)
  */
@@ -61,6 +62,6 @@ private:
     const int m_adc_pin;
 };
 
-} // BotanyNet
+}  // namespace BotanyNet
 
-#endif // BOTANYNET_SOILPROBE_H
+#endif  // BOTANYNET_SOILPROBE_H

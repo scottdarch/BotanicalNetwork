@@ -1,6 +1,6 @@
 {
     "board": "arduino:samd:mkr1000",
-    "port": "/dev/tty.usbmodem1422101",
+    "port": "/dev/tty.usbmodem14101",
     "sketch": "soil_proto.ino",
     "output": "build"
 }

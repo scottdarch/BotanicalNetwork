@@ -30,14 +30,15 @@
 #include <MqttClient.h>
 #include <algorithm>
 #include <cinttypes>
+
+#include "config.hpp"
 #include "HomeNet.hpp"
 
 namespace BotanyNet
 {
-
 struct MonotonicClock
 {
-    virtual std::uint64_t getUptimeSeconds() const = 0;
+    virtual unsigned long getUptimeSeconds() = 0;
 
 protected:
     virtual ~MonotonicClock() = default;
@@ -49,19 +50,20 @@ protected:
 class Node
 {
 public:
-    static constexpr size_t MaxBrokerUrlLen = 24u;
-    static constexpr const char* BotnetChirpTemplate = "    {\
-        \"node\": %" PRIu16 ",\
-        \"diagnostic\": {\
-            \"status\": %" PRIu16 ",\
-            \"battery\": 255,\
-            \"reserved_24\": 0,\
-            \"uptime_sec\": 0,\
-        }.\
-        \"data\": \"%s\"\
-    }";
-    static constexpr size_t MaxTopicNameLen = 12u;
-    static constexpr size_t MaxDataLen = 128u;
+    static constexpr size_t      MaxBrokerUrlLen     = 24u;
+    static constexpr const char* BotnetChirpTemplate = "{\n"
+                                                       "\t\"node\": %u,\n"
+                                                       "\t\"diagnostic\": {\n"
+                                                       "\t\t\"status\": %u,\n"
+                                                       "\t\t\"battery\": %u,\n"
+                                                       "\t\t\"reserved_16\": 0,\n"
+                                                       "\t\t\"uptime_sec\": %lu,\n"
+                                                       "\t}\n"
+                                                       "\t\"data\": \"%s\"\n"
+                                                       "}";
+    static constexpr size_t MaxTopicNameLen      = 12u;
+    static constexpr size_t TopicNameBufferLen   = MaxTopicNameLen + 6u;
+    static constexpr size_t MaxDataLen           = 128u;
     static constexpr size_t BotnetChipBufferSize = strlen(BotnetChirpTemplate) + 13 + MaxDataLen + 1;
 
     Node(std::uint16_t nodeid, MonotonicClock& clock, HomeNet& network, const char* const broker, int port)
@@ -87,86 +89,119 @@ public:
 
     void requestConnection()
     {
-        
         m_should_connect = true;
     }
 
     void disconnect()
     {
-        m_should_connect =  false;
+        m_should_connect = false;
         m_mqtt_client.stop();
         m_hostname_lookup_started = false;
     }
 
-    bool isConnected()
+    int isConnected()
     {
         return m_mqtt_client.connected();
     }
 
-    void sendHumidity(float humidity)
+    int sendHumidity(float humidity)
     {
-        sendFloat("humidity", humidity);
+        return sendFloat("humidity", humidity);
     }
 
-    void sendTemperatureC(float degressC)
+    int sendTemperatureC(float degressC)
     {
-        sendFloat("tempc", degressC);
+        return sendFloat("tempc", degressC);
     }
 
-    void sendFloat(const char* const topic, float value)
+    int sendFloat(const char* const topic, float value)
     {
-        m_data_buffer[0] = 0;
+        m_data_buffer[0]           = 0;
         const int written_or_error = snprintf(m_data_buffer, MaxDataLen, "%f", value);
-        // TODO: handle errors as node status bits
-        if (written_or_error > 0)
+        if (written_or_error < 0)
         {
-            sendData(topic, m_data_buffer);
+            BOTNET_SERIAL_DEBUG_PRINTLN("Unknown snprintf error writing data.");
+            return written_or_error;
         }
+        if (written_or_error >= MaxDataLen)
+        {
+            BOTNET_SERIAL_DEBUG_PRINTLN("Internal buffer overflow in data buffer.");
+            return -5;
+        }
+        return sendData(topic, m_data_buffer);
     }
 
-    void sendData(const char* const topic, const char* const data)
+    int sendData(const char* const topic, const char* const data)
     {
         if (!topic || strlen(topic) > MaxTopicNameLen)
         {
-            return;
+            return -2;
         }
         if (!data || strlen(data) > MaxDataLen)
         {
-            return;
+            return -2;
         }
 
-        // TODO, handle buffer overflow
-        snprintf(m_topic_buffer, MaxTopicNameLen + 6, "btnt/%s", topic);
-        snprintf(m_chirp_buffer,
-                 BotnetChipBufferSize,
-                 BotnetChirpTemplate,
-                 m_nodeid,
-                 0u,
-                 data);
-        
-        Serial.println(m_chirp_buffer);
+        const int topic_written = snprintf(m_topic_buffer, TopicNameBufferLen, "btnt/%s", topic);
+        if (topic_written < 0)
+        {
+            BOTNET_SERIAL_DEBUG_PRINTLN("Unknown snprintf error writing topic.");
+            return topic_written;
+        }
+        if (topic_written >= TopicNameBufferLen)
+        {
+            BOTNET_SERIAL_DEBUG_PRINTLN("Internal buffer overflow in topic name buffer.");
+            return -5;
+        }
+
+        const int chirp_written = snprintf(m_chirp_buffer,
+                                           BotnetChipBufferSize,
+                                           BotnetChirpTemplate,
+                                           m_nodeid,
+                                           0u,
+                                           0u,
+                                           m_clock.getUptimeSeconds(),
+                                           data);
+
+        if (chirp_written < 0)
+        {
+            BOTNET_SERIAL_DEBUG_PRINTLN("Unknown snprintf error.");
+            return chirp_written;
+        }
+        if (chirp_written >= BotnetChipBufferSize)
+        {
+            BOTNET_SERIAL_DEBUG_PRINTLN("Internal buffer overflow in output buffer.");
+            return -5;
+        }
+
+        BOTNET_SERIAL_DEBUG_PRINT("Topic: ");
+        BOTNET_SERIAL_DEBUG_PRINTLN(m_topic_buffer);
+        BOTNET_SERIAL_DEBUG_PRINTLN(m_chirp_buffer);
 
         if (!m_mqtt_client.connected())
         {
-            return;
+            return -3;
         }
-        if (!m_mqtt_client.beginMessage(m_topic_buffer))
+        if (!m_mqtt_client.beginMessage(m_topic_buffer, true))
         {
-            Serial.println("beginMessage failed!");
+            BOTNET_SERIAL_DEBUG_PRINTLN("beginMessage failed!");
+            return -3;
         }
         else
         {
             m_mqtt_client.print(m_chirp_buffer);
             if (!m_mqtt_client.endMessage())
             {
-                Serial.println("endMessage failed!");
+                BOTNET_SERIAL_DEBUG_PRINTLN("endMessage failed!");
+                return -3;
             }
+            return 0;
         }
     }
 
     void service(unsigned long now_millis)
     {
-        (void)now_millis;
+        (void) now_millis;
         // TODO: hostname TTL
         if (m_mqtt_client_address != INADDR_NONE)
         {
@@ -192,38 +227,39 @@ public:
     }
 
 private:
-
-    void connectNow()
+    int connectNow()
     {
         if (!m_mqtt_client.connect(m_mqtt_client_address, m_mqtt_broker_port))
         {
             const int error = m_mqtt_client.connectError();
-            Serial.print("MQTT connection error (");
-            Serial.print(error);
-            Serial.println(')');
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT connection error (");
+            BOTNET_SERIAL_DEBUG_PRINT(error);
+            BOTNET_SERIAL_DEBUG_PRINTLN(')');
+            return error;
         }
         else
         {
-            Serial.print("Connected to MQTT broker ");
-            Serial.println(m_mqtt_broker);
+            BOTNET_SERIAL_DEBUG_PRINT("Connected to MQTT broker ");
+            BOTNET_SERIAL_DEBUG_PRINTLN(m_mqtt_broker);
             m_should_connect = false;
+            return 0;
         }
     }
 
     const std::uint16_t m_nodeid;
-    MonotonicClock& m_clock;
-    HomeNet&   m_net;
-    MqttClient m_mqtt_client;
-    char       m_mqtt_broker[MaxBrokerUrlLen + 1];
-    const int  m_mqtt_broker_port;
-    bool       m_hostname_lookup_started;
-    IPAddress  m_mqtt_client_address;
-    bool       m_should_connect;
-    char       m_topic_buffer[MaxTopicNameLen + 6];
-    char       m_data_buffer[MaxDataLen];
-    char       m_chirp_buffer[BotnetChipBufferSize];
+    MonotonicClock&     m_clock;
+    HomeNet&            m_net;
+    MqttClient          m_mqtt_client;
+    char                m_mqtt_broker[MaxBrokerUrlLen + 1];
+    const int           m_mqtt_broker_port;
+    bool                m_hostname_lookup_started;
+    IPAddress           m_mqtt_client_address;
+    bool                m_should_connect;
+    char                m_topic_buffer[TopicNameBufferLen];
+    char                m_data_buffer[MaxDataLen];
+    char                m_chirp_buffer[BotnetChipBufferSize];
 };
 
 }  // namespace BotanyNet
 
-#endif // BOTANYNET_BOTANYNET_INCLUDED_H
+#endif  // BOTANYNET_BOTANYNET_INCLUDED_H
