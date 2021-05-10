@@ -29,6 +29,15 @@
 
 #include <cstdint>
 
+#ifndef BOTANYNET_XSTR
+#    define BOTANYNET_XSTR(s) BOTANYNET_STR(s)
+#    define BOTANYNET_STR(s) #s
+#endif
+
+#ifndef EPOCH_TIME_OFF
+#   define EPOCH_TIME_OFF 946684800  // This is 1st January 2000, 00:00:00 in epoch time
+#endif
+
 // +--------------------------------------------------------------------------+
 // | CONFIGURATION
 // +--------------------------------------------------------------------------+
@@ -36,20 +45,34 @@
 // start programming a firmware. Once we start sleeping the device becomes
 // unavailable for either.
 constexpr unsigned long StartupDelayMillis = 10000;
-constexpr uint8_t SampleDelaySec = 10;
-static_assert(SampleDelaySec < 60, "We're assuming that we are sleeping < 60 seconds.");
+constexpr uint8_t SampleDelaySec = 600;
+static_assert(SampleDelaySec < 3600, "We're assuming that we are sleeping < 1 hour.");
 
-constexpr uint8_t BotnetNodeId = 1;
+#define BotnetNodeId 1
 constexpr const char* BotnetBroker = "botnet";
 constexpr int BotnetPort = 1883;
 
 constexpr int PinSht1Data = 11;
 constexpr int PinSht1Clk = 12;
-constexpr int PinSoilProbePower = 6;
-constexpr int PinSoilProbeADC = A0;
+constexpr int PinSoilProbePower = 7;
+constexpr int PinSoilProbeADC = A1;
 
-// For debugging set to true to disable sleep and keep the serial console attached.
-constexpr bool DisableSleep = false;
+constexpr unsigned long MDNSTimeoutMillis = 5000;
+constexpr unsigned long WiFiTimeoutMillis = 10000;
+
+// For debugging set to false to disable sleep, keep the serial console attached, and run
+// the wifi at full speed.
+constexpr bool EnableLowPowerMode = true;
+
+// ADC Calibration provided by CorrectADCResponse sketch for SAMD cores.
+constexpr size_t ADCResolutionBits = 12u;
+constexpr size_t ADCOffset = 15;
+constexpr size_t ADCGain = 2063;
+
+// Tri-colour LED attached to UBlox WiFi module.
+constexpr int WiFiNINAPinLEDRed = 26;
+constexpr int WiFiNINAPinLEDGreen = 25;
+constexpr int WiFiNINAPinLEDBlue = 27;
 
 // If defined then components may log stuff to Serial. If not defined only the top
 // level sketch is allowed to use the Serial terminal.

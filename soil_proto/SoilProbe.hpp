@@ -28,6 +28,7 @@
 #define BOTANYNET_SOILPROBE_H
 
 #include <Arduino.h>
+#include <limits>
 
 #include "config.hpp"
 
@@ -39,22 +40,42 @@ namespace BotanyNet
 class SoilProbe final
 {
 public:
+    using AnalogReadType = int;
+    static constexpr size_t MaxADCValue = (1 << ADCResolutionBits) - 1;
+
     SoilProbe(int power_pin, int adc_pin)
         : m_power_pin(power_pin)
         , m_adc_pin(adc_pin)
     {}
 
+    void start()
+    {
+        analogReadResolution(ADCResolutionBits);
+        analogReadCorrection(ADCOffset, ADCGain);
+
+        pinMode(m_power_pin, OUTPUT);
+        digitalWrite(m_power_pin, LOW);
+        pinMode(m_adc_pin, INPUT);
+    }
+
+    void stop()
+    {
+        digitalWrite(m_power_pin, LOW);
+        // High impedance
+        pinMode(m_power_pin, INPUT);
+    }
+
     /**
      * Blocking ADC read of the sensor for now. Interrupts in the future?
      * We'll see.
      */
-    int readSoil()
+    float readSoil()
     {
         digitalWrite(m_power_pin, HIGH);
         delay(10);
-        const int val = analogRead(m_adc_pin);
+        const AnalogReadType reading = analogRead(m_adc_pin);
         digitalWrite(m_power_pin, LOW);
-        return val;
+        return reading / static_cast<float>(MaxADCValue);
     }
 
 private:

@@ -57,9 +57,9 @@ public:
                                                        "\t\t\"status\": %u,\n"
                                                        "\t\t\"battery\": %u,\n"
                                                        "\t\t\"reserved_16\": 0,\n"
-                                                       "\t\t\"uptime_sec\": %lu,\n"
-                                                       "\t}\n"
-                                                       "\t\"data\": \"%s\"\n"
+                                                       "\t\t\"uptime_sec\": %lu\n"
+                                                       "\t},\n"
+                                                       "\t\"data\": %s\n"
                                                        "}";
     static constexpr size_t MaxTopicNameLen      = 12u;
     static constexpr size_t TopicNameBufferLen   = MaxTopicNameLen + 6u;
@@ -97,6 +97,7 @@ public:
         m_should_connect = false;
         m_mqtt_client.stop();
         m_hostname_lookup_started = false;
+        m_mqtt_client_address = INADDR_NONE;
     }
 
     int isConnected()
@@ -117,7 +118,7 @@ public:
     int sendFloat(const char* const topic, float value)
     {
         m_data_buffer[0]           = 0;
-        const int written_or_error = snprintf(m_data_buffer, MaxDataLen, "%f", value);
+        const int written_or_error = snprintf(m_data_buffer, MaxDataLen, "%.2f", value);
         if (written_or_error < 0)
         {
             BOTNET_SERIAL_DEBUG_PRINTLN("Unknown snprintf error writing data.");
@@ -209,32 +210,77 @@ public:
             {
                 connectNow();
             }
+            else
+            {
+                m_mqtt_client.poll();
+            }
         }
         else if (!m_hostname_lookup_started)
         {
-            if (HomeNet::Result::SUCCESS == m_net.startResolvingHostname(m_mqtt_broker))
+            if (HomeNet::Result::SUCCESS == m_net.startResolvingHostname(m_mqtt_broker, true))
             {
+                BOTNET_SERIAL_DEBUG_PRINT("Starting lookup for MQTT broker ");
+                BOTNET_SERIAL_DEBUG_PRINTLN(m_mqtt_broker);
                 m_hostname_lookup_started = true;
             }
         }
-        else if (m_should_connect && !m_mqtt_client.connected())
+        else
         {
-            if (HomeNet::Result::SUCCESS == m_net.getHostName(m_mqtt_broker, m_mqtt_client_address))
-            {
-                connectNow();
-            }
+            m_net.getHostName(m_mqtt_broker, m_mqtt_client_address);
         }
     }
 
 private:
+    void printConnectionError(const int error)
+    {
+#ifdef BOTNET_ENABLE_SERIAL_INTERNAL_DEBUG
+        if(error == MQTT_CONNECTION_REFUSED)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_CONNECTION_REFUSED");
+        }
+        else if(error == MQTT_CONNECTION_TIMEOUT)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_CONNECTION_TIMEOUT");
+        }
+        else if(error == MQTT_SUCCESS)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_SUCCESS");
+        }
+        else if(error == MQTT_UNACCEPTABLE_PROTOCOL_VERSION)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_UNACCEPTABLE_PROTOCOL_VERSION");
+        }
+        else if(error == MQTT_IDENTIFIER_REJECTED)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_IDENTIFIER_REJECTED");
+        }
+        else if(error == MQTT_SERVER_UNAVAILABLE)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_SERVER_UNAVAILABLE");
+        }
+        else if(error == MQTT_BAD_USER_NAME_OR_PASSWORD)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_BAD_USER_NAME_OR_PASSWORD");
+        }
+        else if(error == MQTT_NOT_AUTHORIZED)
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("MQTT_NOT_AUTHORIZED");
+        }
+#else
+        (void)error;
+#endif
+    }
+
     int connectNow()
     {
         if (!m_mqtt_client.connect(m_mqtt_client_address, m_mqtt_broker_port))
         {
             const int error = m_mqtt_client.connectError();
             BOTNET_SERIAL_DEBUG_PRINT("MQTT connection error (");
-            BOTNET_SERIAL_DEBUG_PRINT(error);
+            printConnectionError(error);
             BOTNET_SERIAL_DEBUG_PRINTLN(')');
+            // Reset the client address in case this was an MDNS error.
+            m_mqtt_client_address = INADDR_NONE;
             return error;
         }
         else

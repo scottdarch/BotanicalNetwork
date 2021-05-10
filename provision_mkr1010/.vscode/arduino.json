@@ -1,0 +1,4 @@
+{
+    "sketch": "provision.ino",
+    "board": "arduino:samd:mkrwifi1010"
+}

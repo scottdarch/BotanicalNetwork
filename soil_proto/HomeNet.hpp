@@ -30,15 +30,14 @@
 #ifndef BOTANYNET_HOMENET_INCLUDED_H
 #define BOTANYNET_HOMENET_INCLUDED_H
 
-#include <WiFi101.h>
+#include <WiFiNINA.h>
+#include <utility/wifi_drv.h>
 #include <WiFiUdp.h>
 #include <algorithm>
 #include <ArduinoMDNS.h>
 
-#ifndef BOTANYNET_XSTR
-#    define BOTANYNET_XSTR(s) BOTANYNET_STR(s)
-#    define BOTANYNET_STR(s) #    s
-#endif
+#include "config.hpp"
+#include "arduino_secrets.h"
 
 namespace BotanyNet
 {
@@ -57,14 +56,14 @@ class HomeNet final
         , m_mdns(m_udp)
         , m_mdns_init(false)
     {
-        WiFi.setTimeout(10000);
+        WiFi.setTimeout(WiFiTimeoutMillis);
     }
 
 public:
     /**
      * Forms a botany newtwork node name to report via mDNS.
      */
-    static constexpr const char* NodeName = "botnet.node" BOTANYNET_STR(BOTNET_NODEID);
+    static constexpr const char* NodeName = "botnet.node" BOTANYNET_XSTR(BotnetNodeId);
 
     /**
      * These are µCs. Don't use overly flowery hostnames, okay?
@@ -73,11 +72,11 @@ public:
 
     enum class Result : int
     {
-        SUCCESS = 1,
-        OKAY_FALSE = 0,
+        SUCCESS          = 1,
+        OKAY_FALSE       = 0,
         INVALID_ARGUMENT = -2,
-        INVALID_STATE = -3,
-        UNKNOWN_ERROR = -4
+        INVALID_STATE    = -3,
+        UNKNOWN_ERROR    = -4
     };
 
 private:
@@ -86,38 +85,85 @@ private:
      */
     struct HostNameRecord
     {
-        char hostname[MaxHostNameLen + 1];
-        IPAddress  addr;
+        char      hostname[MaxHostNameLen + 1];
+        IPAddress addr;
     };
 
 public:
     uint8_t connect()
     {
-        return WiFi.begin();
+        WiFiDrv::pinMode(WiFiNINAPinLEDRed, OUTPUT);
+        WiFiDrv::pinMode(WiFiNINAPinLEDGreen, OUTPUT);
+        WiFiDrv::pinMode(WiFiNINAPinLEDBlue, OUTPUT);
+
+        WiFiDrv::digitalWrite(WiFiNINAPinLEDRed, LOW);
+        WiFiDrv::digitalWrite(WiFiNINAPinLEDGreen, LOW);
+        WiFiDrv::analogWrite(WiFiNINAPinLEDBlue, 15);
+#ifdef BOTNET_ENABLE_SERIAL_INTERNAL_DEBUG
+        {
+            arduino::String fv = WiFi.firmwareVersion();
+            if (fv < WIFI_FIRMWARE_LATEST_VERSION)
+            {
+                BOTNET_SERIAL_DEBUG_PRINT("Please upgrade the firmware from ");
+                BOTNET_SERIAL_DEBUG_PRINT(fv);
+                BOTNET_SERIAL_DEBUG_PRINT(" to ");
+                BOTNET_SERIAL_DEBUG_PRINTLN(WIFI_FIRMWARE_LATEST_VERSION);
+            }
+        }
+#endif
+
+        WiFi.setHostname(HomeNet::NodeName);
+
+        // attempt to connect to WiFi network:
+        return WiFi.begin(SECRET_SSID, SECRET_PASS);
     }
 
     uint8_t getStatus() const
     {
-        return WiFi.status();
+        const uint8_t realStatus = WiFi.status();
+        if (WL_CONNECTED == realStatus && !m_mdns_init)
+        {
+            // Report idle while waiting for mdns since we are pretending that
+            // MDNS comes with a wifi connection.
+            return WL_IDLE_STATUS;
+        }
+        return realStatus;
     }
 
     void service(unsigned long now_millis)
     {
-        (void)now_millis;
-        if (!m_mdns_init && WiFi.status() == WL_CONNECTED)
-        {
-            m_mdns.begin(WiFi.localIP(), HomeNet::NodeName);
-            m_mdns.setNameResolvedCallback(HomeNet::mdnsCallback);
-            m_mdns_init = true;
-            BOTNET_SERIAL_DEBUG_PRINTLN("MDNS is running.");
-        }
+        (void) now_millis;
+        const int wifi_status = WiFi.status();
         if (m_mdns_init)
         {
             m_mdns.run();
         }
+        else if (wifi_status == WL_CONNECTED)
+        {
+            WiFiDrv::analogWrite(WiFiNINAPinLEDBlue, 0);
+            WiFiDrv::digitalWrite(WiFiNINAPinLEDBlue, LOW);
+            m_mdns.begin(WiFi.localIP(), HomeNet::NodeName);
+            m_mdns.setNameResolvedCallback(HomeNet::mdnsCallback);
+            m_mdns_init = true;
+            BOTNET_SERIAL_DEBUG_PRINTLN("MDNS is running.");
+            if (EnableLowPowerMode)
+            {
+                WiFi.lowPowerMode();
+            }
+            else
+            {
+                WiFiDrv::analogWrite(WiFiNINAPinLEDGreen, 50);
+                WiFi.noLowPowerMode();
+            }
+        }
+        else
+        {
+            BOTNET_SERIAL_DEBUG_PRINT("Reason code: ");
+            BOTNET_SERIAL_DEBUG_PRINTLN(WiFi.reasonCode());
+        }
     }
 
-    Result startResolvingHostname(const char* const hostname)
+    Result startResolvingHostname(const char* const hostname, bool isLocal)
     {
         if (!hostname)
         {
@@ -125,7 +171,7 @@ public:
             return Result::INVALID_ARGUMENT;
         }
         const size_t hostNameLen = strlen(hostname);
-        
+
         if (hostNameLen > MaxHostNameLen)
         {
             // Can't look this up because it's null or too long.
@@ -143,15 +189,48 @@ public:
 
         // Reset any previously cached record.
         m_hostname_record.hostname[0] = 0;
-        m_hostname_record.addr = INADDR_NONE;
+        m_hostname_record.addr        = INADDR_NONE;
 
-        m_mdns.resolveName(hostname, 5000);
-        return Result::SUCCESS;
+        Result methodResult = Result::UNKNOWN_ERROR;
+
+        if (isLocal)
+        {
+            const int result = m_mdns.resolveName(hostname, MDNSTimeoutMillis);
+            if (1 == result)
+            {
+                methodResult = Result::SUCCESS;
+            }
+            else
+            {
+                BOTNET_SERIAL_DEBUG_PRINT("MDNS returned some sort of error (");
+                BOTNET_SERIAL_DEBUG_PRINT(result);
+                BOTNET_SERIAL_DEBUG_PRINT(") when resolving: ");
+                BOTNET_SERIAL_DEBUG_PRINTLN(hostname);
+            }
+        }
+        else
+        {
+            const int result = WiFi.hostByName(hostname, m_hostname_record.addr);
+
+            if (1 == result)
+            {
+                strncpy(m_hostname_record.hostname, hostname, hostNameLen + 1);
+                methodResult = Result::SUCCESS;
+            }
+            else
+            {
+                BOTNET_SERIAL_DEBUG_PRINT("hostByName returned some sort of error (");
+                BOTNET_SERIAL_DEBUG_PRINT(result);
+                BOTNET_SERIAL_DEBUG_PRINT(") when resolving: ");
+                BOTNET_SERIAL_DEBUG_PRINTLN(hostname);
+            }
+        }
+        return methodResult;
     }
 
     Result getHostName(const char* const hostname, IPAddress& outAddr) const
     {
-        if (hostname && strncmp(hostname, m_hostname_record.hostname, MaxHostNameLen) == 0)
+        if (hostname && strncmp(hostname, m_hostname_record.hostname, std::min(strlen(hostname), MaxHostNameLen)) == 0)
         {
             outAddr = m_hostname_record.addr;
             return Result::SUCCESS;
@@ -165,6 +244,16 @@ public:
     arduino::Client& getClient()
     {
         return m_wifi_client;
+    }
+
+    void shutdown()
+    {
+        m_udp.flush();
+        // since flush isn't actually implemented we have this hack...
+        delay(100);
+        m_udp.stop();
+        WiFi.end();
+        m_mdns_init = false;
     }
 
     // +----------------------------------------------------------------------+
@@ -196,10 +285,6 @@ public:
             return "WL_AP_CONNECTED";
         case WL_AP_FAILED:
             return "WL_AP_FAILED";
-        case WL_PROVISIONING:
-            return "WL_PROVISIONING";
-        case WL_PROVISIONING_FAILED:
-            return "WL_PROVISIONING_FAILED";
         default:
             return "(unknown status)";
         }

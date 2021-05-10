@@ -30,6 +30,9 @@
 #include <SHT1x.h>
 #include <ArduinoMqttClient.h>
 #include <RTCZero.h>
+#include <SAMD_AnalogCorrection.h>
+#include <ArduinoECCX08.h>
+#include <ECCX08.h>
 
 #include "config.hpp"
 #include "HomeNet.hpp"
@@ -91,8 +94,21 @@ public:
         }
         else
         {
-            const uint8_t now_sec = m_rtc.getSeconds();
-            m_rtc.setAlarmSeconds((now_sec + sleepTimeSeconds) % 60);
+            while(1)
+            {
+                const uint8_t now_sec = m_rtc.getSeconds();
+                const uint8_t now_min = m_rtc.getMinutes();
+                const uint8_t now_hours = m_rtc.getHours();
+                m_rtc.setAlarmSeconds((now_sec + sleepTimeSeconds) % 60);
+                m_rtc.setAlarmMinutes((now_min + (sleepTimeSeconds / 60) % 60));
+                m_rtc.setAlarmHours((now_hours + (sleepTimeSeconds / 3600) % 3600));
+                if (m_rtc.getMinutes() == now_min && m_rtc.getHours() == now_hours)
+                {
+                    break;
+                }
+                // Else the minute rolled over while we were setting the alarm
+                // Try again.
+            }
             m_rtc.standbyMode();
         }
     }
@@ -102,7 +118,7 @@ public:
     // +----------------------------------------------------------------------+
     virtual unsigned long getUptimeSeconds() override final
     {
-        return m_rtc.getEpoch();
+        return m_rtc.getEpoch() - EPOCH_TIME_OFF;
     }
 
     // +----------------------------------------------------------------------+
@@ -113,7 +129,7 @@ private:
     const bool m_low_power_sleep;
 };
 
-RTCMonotonicClock RTCMonotonicClock::singleton(!DisableSleep);
+RTCMonotonicClock RTCMonotonicClock::singleton(EnableLowPowerMode);
 
 // Nice name for our clock.
 constexpr RTCMonotonicClock& clock = RTCMonotonicClock::singleton;
@@ -129,7 +145,7 @@ BotanyNet::Node bnclient(BotnetNodeId, RTCMonotonicClock::singleton, homenet, Bo
 SHT1x sht1x(PinSht1Data, PinSht1Clk);
 
 // Soil probe using resistence (cheapo)
-BotanyNet::SoilProbe probe(PinSoilProbeADC, PinSoilProbePower);
+BotanyNet::SoilProbe probe(PinSoilProbePower, PinSoilProbeADC);
 
 // +--------------------------------------------------------------------------+
 // | SKETCH
@@ -211,13 +227,10 @@ void handleWaitingForMqtt(const unsigned long now_millis)
         bnclient.requestConnection();
         state = SketchState::WaitingForMqtt;
     }
-    else if (state == SketchState::WaitingForMqtt)
+    else if (bnclient.isConnected())
     {
-        if (bnclient.isConnected())
-        {
-            Serial.println("connected to botnet.");
-            state = SketchState::BotnetOnline;
-        }
+        Serial.println("connected to botnet.");
+        state = SketchState::BotnetOnline;
     }
 }
 
@@ -229,14 +242,26 @@ void runBotnet(const unsigned long now_millis)
     {
         Serial.println("Reading...");
         const float humidity            = sht1x.readHumidity();
-        const int   soil                = probe.readSoil();
+        const float soil                = probe.readSoil();
         const float temperature_celcius = sht1x.readTemperatureC();
         bnclient.sendHumidity(humidity);
         bnclient.sendTemperatureC(temperature_celcius);
-        bnclient.sendFloat("soilr", static_cast<float>(soil));
+        bnclient.sendFloat("soilr", soil);
     }
     digitalWrite(LED_BUILTIN, 0);
+    if (EnableLowPowerMode)
+    {
+        // Shutdown the wifi to save power. Our state machine will detect
+        // this and reconnect after we wake up.
+        homenet.shutdown();
+        probe.stop();
+    }
     clock.sleep(SampleDelaySec);
+    if (EnableLowPowerMode)
+    {
+        probe.start();
+        Serial.begin(115200);
+    }
     digitalWrite(LED_BUILTIN, 1);
 }
 
@@ -247,7 +272,13 @@ void runBotnet(const unsigned long now_millis)
 void setup(void)
 {
     Serial.begin(115200);
-#ifdef BOTNET_ENABLE_SERIAL_INTERNAL_DEBUG
+
+    probe.start();
+    // (thanks https://www.element14.com/community/community/project14/iot-in-the-cloud/blog/2019/05/27/the-windchillator-reducing-the-sleep-current-of-the-arduino-mkr-wifi-1010-to-800-ua)
+    // Turn off crypto part to save power.
+    ECCX08.begin();
+    ECCX08.end();
+
     const unsigned long delay_start = millis();
     while (!Serial && (delay_start + StartupDelayMillis) > millis())
     {
@@ -256,7 +287,7 @@ void setup(void)
         digitalWrite(LED_BUILTIN, 0);
         delay(500);
     }
-#endif
+
     Serial.print("Starting prototype bot(any)net node ");
     Serial.println(BotnetNodeId);
 
