@@ -62,7 +62,7 @@ constexpr unsigned long WiFiTimeoutMillis = 10000;
 
 // For debugging set to false to disable sleep, keep the serial console attached, and run
 // the wifi at full speed.
-constexpr bool EnableLowPowerMode = true;
+constexpr bool EnableLowPowerMode = false;
 
 // ADC Calibration provided by CorrectADCResponse sketch for SAMD cores.
 constexpr size_t ADCResolutionBits = 12u;

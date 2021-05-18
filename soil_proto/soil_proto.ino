@@ -38,6 +38,41 @@
 #include "HomeNet.hpp"
 #include "SoilProbe.hpp"
 #include "BotanyNet.hpp"
+#include "Terminal.hpp"
+
+// +--------------------------------------------------------------------------+
+// | TERMINAL
+// +--------------------------------------------------------------------------+
+using BotnetTerminal = BotanyNet::Terminal<typeof(Serial), 1>;
+
+int commandMode(arduino::Stream& t, int argc, const char* argv[])
+{
+    t.print("called mode.");
+    return 0;
+}
+
+
+static const char* const CommandHelpMode = "This is a test of our command structure.";
+
+template<> BotnetTerminal BotnetTerminal::terminal(
+    Serial,
+    std::array<BotnetTerminal::CommandRecord, BotnetTerminal::NumberOfCommands>
+    {
+        {
+            {
+                "mode",
+                commandMode,
+                CommandHelpMode
+            }
+        }
+    }
+);
+
+
+namespace
+{
+    BotnetTerminal& terminal = BotnetTerminal::terminal;
+}
 
 // +--------------------------------------------------------------------------+
 // | NETWORKING
@@ -83,9 +118,9 @@ public:
 
     void sleep(const uint8_t sleepTimeSeconds)
     {
-        Serial.print("Sleep for ");
-        Serial.print(sleepTimeSeconds);
-        Serial.println("sec.");
+        terminal.print("Sleep for ");
+        terminal.print(sleepTimeSeconds);
+        terminal.println("sec.");
 
         if (!m_low_power_sleep)
         {
@@ -167,7 +202,7 @@ void checkLan(const unsigned long now_millis)
     homenet.service(now_millis);
     if (homenet.getStatus() != WL_CONNECTED)
     {
-        Serial.println("LAN is not connected. Starting over...");
+        terminal.println("LAN is not connected. Starting over...");
         homenet.printStatus(Serial);
         bnclient.disconnect();
         state = SketchState::Initializing;
@@ -180,16 +215,16 @@ void handleWaitingForLan(const unsigned long now_millis)
     const uint8_t wifi_status = homenet.getStatus();
     if (wifi_status != WL_CONNECTED && state == SketchState::Initializing)
     {
-        Serial.println("Connecting to LAN...");
+        terminal.println("Connecting to LAN...");
         const int result = homenet.connect();
-        Serial.print("Connection result (");
-        Serial.print(result);
-        Serial.println(')');
+        terminal.print("Connection result (");
+        terminal.print(result);
+        terminal.println(')');
         state = SketchState::WaitingForLan;
     }
     else if (wifi_status == WL_CONNECTED)
     {
-        Serial.println("Connected to LAN.");
+        terminal.println("Connected to LAN.");
         homenet.printStatus(Serial);
         homenet.printCurrentNet(Serial);
         homenet.printWifiData(Serial);
@@ -198,9 +233,9 @@ void handleWaitingForLan(const unsigned long now_millis)
     else
     {
         homenet.printStatus(Serial);
-        Serial.print("wifi not connected (");
-        Serial.print(wifi_status);
-        Serial.println(")...");
+        terminal.print("wifi not connected (");
+        terminal.print(wifi_status);
+        terminal.println(")...");
         digitalWrite(LED_BUILTIN, 1);
         delay(250);
         digitalWrite(LED_BUILTIN, 0);
@@ -213,7 +248,7 @@ void checkMqtt(const unsigned long now_millis)
     bnclient.service(now_millis);
     if (state == SketchState::BotnetOnline && !bnclient.isConnected())
     {
-        Serial.println("MQTT connect was closed. Reconnecting...");
+        terminal.println("MQTT connect was closed. Reconnecting...");
         state = SketchState::Online;
     }
 }
@@ -223,13 +258,13 @@ void handleWaitingForMqtt(const unsigned long now_millis)
     (void) now_millis;
     if (state == SketchState::Online)
     {
-        Serial.println("Trying to connect to botnet...");
+        terminal.println("Trying to connect to botnet...");
         bnclient.requestConnection();
         state = SketchState::WaitingForMqtt;
     }
     else if (bnclient.isConnected())
     {
-        Serial.println("connected to botnet.");
+        terminal.println("connected to botnet.");
         state = SketchState::BotnetOnline;
     }
 }
@@ -240,7 +275,7 @@ void runBotnet(const unsigned long now_millis)
 {
     if (now_millis - last_update_at_millis > 1000)
     {
-        Serial.println("Reading...");
+        terminal.println("Reading...");
         const float humidity            = sht1x.readHumidity();
         const float soil                = probe.readSoil();
         const float temperature_celcius = sht1x.readTemperatureC();
@@ -260,7 +295,7 @@ void runBotnet(const unsigned long now_millis)
     if (EnableLowPowerMode)
     {
         probe.start();
-        Serial.begin(115200);
+        terminal.begin(115200);
     }
     digitalWrite(LED_BUILTIN, 1);
 }
@@ -271,7 +306,7 @@ void runBotnet(const unsigned long now_millis)
 
 void setup(void)
 {
-    Serial.begin(115200);
+    terminal.begin(115200);
 
     probe.start();
     // (thanks https://www.element14.com/community/community/project14/iot-in-the-cloud/blog/2019/05/27/the-windchillator-reducing-the-sleep-current-of-the-arduino-mkr-wifi-1010-to-800-ua)
@@ -279,24 +314,17 @@ void setup(void)
     ECCX08.begin();
     ECCX08.end();
 
-    const unsigned long delay_start = millis();
-    while (!Serial && (delay_start + StartupDelayMillis) > millis())
-    {
-        digitalWrite(LED_BUILTIN, 1);
-        delay(500);
-        digitalWrite(LED_BUILTIN, 0);
-        delay(500);
-    }
+    terminal.startupDelay();
 
-    Serial.print("Starting prototype bot(any)net node ");
-    Serial.println(BotnetNodeId);
+    terminal.print("Starting prototype bot(any)net node ");
+    terminal.println(BotnetNodeId);
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
     clock.begin();
 
-    Serial.println("Sensor started...");
+    terminal.println("Sensor started...");
 }
 
 void loop(void)
@@ -321,8 +349,8 @@ void loop(void)
     }
     break;
     default: {
-        Serial.print("ERROR: unknown state encountered ");
-        Serial.println(static_cast<std::underlying_type<SketchState>::type>(state));
+        terminal.print("ERROR: unknown state encountered ");
+        terminal.println(static_cast<std::underlying_type<SketchState>::type>(state));
         while (1)
         {}
     }
