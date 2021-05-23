@@ -42,12 +42,43 @@ class Terminal : public arduino::Stream
 {
 public:
     ///
+    /// The terminal prompt for interactive sessions.
+    ///
+    static constexpr const char* const Prompt = "Botnet: ";
+
+    ///
+    /// The first argument passed to each command.
+    ///
+    static constexpr const char* const ProgramName = "botnet_terminal";
+
+    ///
+    /// A built-in command that prints help text for using all the user-provided
+    /// commands.
+    ///
+    static constexpr const char* const BuiltinCommandHelp = "help";
+
+    ///
+    /// A built-in command that exits the interactive session.
+    ///
+    static constexpr const char* const BuiltinCommandExit = "quit";
+
+    ///
+    /// Message printed at the start of an interactive session.
+    ///
+    static constexpr const char* const ShellMessageStart = "Starting shell...";
+
+    ///
+    /// Message printed when an interactive session ends.
+    ///
+    static constexpr const char* const ShellMessageEnd = "Shell has exited.";
+    
+    ///
     /// The maximum time the service method will use...mostly.
     /// This class tries to keep this deadline but Arduino is not a realtime
     /// framework so calls into other objects may cause us to exceed our
     /// deadline.
     ///
-    static constexpr unsigned long ServiceTimeoutMillis = 800;
+    static constexpr unsigned long DefaultServiceTimeoutMillis = 800;
 
     ///
     /// The maximum number of characters for any one command. This limits the
@@ -61,6 +92,11 @@ public:
     static constexpr size_t LineBufferLength = 100;
 
     ///
+    /// The maximum number of arguments any one command can receive.
+    ///
+    static constexpr size_t MaxArgumentCount = 4;
+
+    ///
     /// Input character that will trigger the parsing of a complete line.
     ///
     static constexpr char LineDelimeter = '\n';
@@ -68,17 +104,30 @@ public:
     ///
     /// Each registered command gets invoked like a mini program.
     ///
-    using Command = int (*)(arduino::Stream& t, int argc, const char* argv[]);
+    using Command = int (*)(arduino::Stream& t, void* user, size_t argc, const char* const argv[]);
 
     ///
     /// The number of commands stored in this object.
     ///
     static constexpr size_t NumberOfCommands = CommandCount;
 
+    ///
+    /// The data structure used to store user-defined commands.
+    ///
     struct CommandRecord
     {
+        /// The command nameused to activate the command.
         const char        name[MaxCommandLength];
+
+        /// Opaque data pass through to the command when invoked.
+        void*             user;
+
+        /// The command program to invoke.
         Command           command;
+
+        /// A pointer to a string of text to emit as part of the help
+        /// system. This pointer must remain valid while the terminal
+        /// is valid.
         const char* const help;
     };
 
@@ -86,11 +135,15 @@ private:
     Terminal(SerialType& serial, std::array<CommandRecord, CommandCount> &&l)
         : m_commands(l)
         , m_serial(serial)
-        , m_alert_led(0)
         , m_line_buffer(nullptr)
         , m_last_command(nullptr)
+        , m_last_command_arguments{ProgramName, 0}
+        , m_last_command_arguments_length(1)
         , m_line_buffer_fill{0}
-    {}
+        , m_running_interactive_shell(false)
+    {
+        static_assert(MaxArgumentCount > 1, "MaxArgumentCount must allow at least one argument per command.");
+    }
 
     virtual ~Terminal()
     {
@@ -98,6 +151,14 @@ private:
     }
 
 public:
+    ///
+    /// Extend the Arduino convention for Serial bool conversions to this class.
+    ///
+    operator bool()
+    {
+        return static_cast<bool>(m_serial);
+    }
+
     ///
     /// Call to start the serial device and to allocate internal buffers.
     ///
@@ -108,11 +169,6 @@ public:
             initInternalBuffers();
         }
         m_serial.begin(baudrate);
-        if (m_alert_led != 0)
-        {
-            pinMode(m_alert_led, OUTPUT);
-            digitalWrite(m_alert_led, LOW);
-        }
     }
 
     ///
@@ -121,129 +177,122 @@ public:
     void end()
     {
         m_serial.end();
-        free(m_line_buffer);
-        m_line_buffer = nullptr;
+        deinitInternalBuffers();
+        m_running_interactive_shell = false;
     }
 
     ///
-    /// Method should be called in setup. This blocks for a few seconds to allow a user
-    /// to interrupt the program and start an interactive session instead.
+    /// Set the internal state of the terminal to run an interactive session
+    /// rather then just being a passive output device.
     ///
-    void startupDelay()
+    void startInteractiveSession()
     {
-        unsigned long       now         = millis();
-        const unsigned long delay_until = StartupDelayMillis + now;
-        while (!m_serial && delay_until > now)
-        {
-            delayForOneSecond();
-            now = millis();
-        }
+        clearScreen();
+        home();
+        println(ShellMessageStart);
+        prompt();
+        m_running_interactive_shell = true;
+    }
 
-        while (delay_until > now)
+    ///
+    /// End the interactive session and revert to a passive output device.
+    ///
+    void endInteractiveSession()
+    {
+        if (m_running_interactive_shell)
         {
-            clearLine();
-            home();
-            print("Starting program in ");
-            print((delay_until - now) / 1000U);
-            print(" seconds...");
-
-            if (delayForOneSecond())
-            {
-                home();
-                clearLine();
-                println("Interrupted startup. Reset to continue.");
-                nextLine();
-                home();
-                prompt();
-                while (true)
-                {
-                    if (service())
-                    {
-                        clearLine();
-                        previousLine();
-                        clearLine();
-                        nextLine();
-                        nextLine();
-                        home();
-                        handleCommand(true);
-                        previousLine();
-                        home();
-                        prompt();
-                    }
-                }
-            }
-            now = millis();
+            clearLineBuffer();
+            clearCommand();
+            println();
+            clearScreen();
+            println(ShellMessageEnd);
+            m_running_interactive_shell = false;
         }
     }
 
     ///
-    /// Call to give CPU time to the terminal.
+    /// Returns if this object is running an interactive session or not.
     ///
-    /// @return true if command delimeter was read else false.
+    bool isInteractive() const
+    {
+        return m_running_interactive_shell;
+    }
+
     ///
-    bool service()
+    /// Give CPU time to the terminal.
+    ///
+    void service(const unsigned long serviceTimeoutMillis = DefaultServiceTimeoutMillis)
     {
         unsigned long       now      = millis();
-        const unsigned long deadline = now + ServiceTimeoutMillis;
-        while (deadline > now && m_serial.available())
+        const unsigned long deadline = now + serviceTimeoutMillis;
+        while (deadline > now)
         {
-            const char read = m_serial.read();
-            if (read == LineDelimeter)
+            if (read_for(deadline - now))
             {
-                readCommand(m_last_command);
-                home();
-                clearToEndOfLine();
-                clearLineBuffer();
-                return true;
-            }
-            else if (!handleControlChar(read))
-            {
-                // This was not a control character. Treat as input.
-                if (!appendToLineBuffer(read))
-                {
-                    previousLine();
-                    print("\e[41mBELL\e[40m");
-                    nextLine();
-                    print("\e[");
-                    print(m_line_buffer_fill);
-                    print("C");
-                }
-                m_serial.print(read);
+                handleCommand(true);
             }
             now = millis();
         }
-        return false;
     }
 
     ///
-    /// This method will not exit for delayTimeMillis but while entered
-    /// it will process input.
+    /// This method will not exit for delayTimeMillis or until the line delimeter
+    /// is read. While entered it will process serial input.
     ///
-    /// @return true if command delimeter was read and the delay exited early. If outTimeRemainingMillis
-    ///         was provided this will be the time left in the delay when the command was received.
+    /// @return true if command delimeter was read and the delay exited early.
     ///
-    bool delayWithInput(unsigned long delayTimeMillis, unsigned long* outTimeRemainingMillis = nullptr)
+    bool delayWithInput(unsigned long delayTimeMillis)
     {
         unsigned long       now         = millis();
         const unsigned long delay_until = now + delayTimeMillis;
         while (delay_until > now)
         {
-            if (service())
+            if (read_for(delay_until - now))
             {
-                if (outTimeRemainingMillis != nullptr)
-                {
-                    *outTimeRemainingMillis = (delay_until - now);
-                }
                 return true;
             }
             delay(1);
             now = millis();
         }
-        if (outTimeRemainingMillis != nullptr)
-        {
-            *outTimeRemainingMillis = 0;
-        }
         return false;
+    }
+
+    ///
+    /// Print out interactive terminal help text.
+    ///
+    void printHelp()
+    {
+        println();
+        println("    The Botnet terminal provides an extermely simple and memory");
+        println("    efficient shell for running basic commands. All commands are");
+        print(  "    case-sensitive and input is limited to ");
+        print(LineBufferLength);
+        println(" characters");
+        println("    for a single command.");
+        println();
+        println("    +------------------------------------------------------------------+");
+        println("    | Available Commands");
+        println("    +------------------------------------------------------------------+");
+        println();
+        print(  "    ");
+        println(BuiltinCommandHelp);
+        println("        Print this message.");
+        println();
+        print(  "    ");
+        println(BuiltinCommandExit);
+        println("        Exit the interactive shell.");
+        println();
+
+        for(const CommandRecord& record: m_commands)
+        {
+            print("    ");
+            println(record.name);
+            print("        ");
+            println(record.help);
+            println();
+        }
+        println("    +------------------------------------------------------------------+");
+        println();
     }
 
     // +----------------------------------------------------------------------+
@@ -259,23 +308,12 @@ public:
     }
 
     ///
-    /// Returns a pointer to the internal command buffer.
-    /// This memory will become invalid if end() is called.
-    ///
-    const char* getCommand() const
-    {
-        return m_last_command;
-    }
-
-    ///
     /// Clear the last command buffer.
     ///
     void clearCommand()
     {
-        if (m_line_buffer)
-        {
-            m_last_command[0] = 0;
-        }
+        m_last_command = nullptr;
+        m_last_command_arguments_length = 1;
     }
 
     ///
@@ -288,15 +326,37 @@ public:
             return false;
         }
 
-        const char* name = getCommand();
+        const char* const name = m_last_command;
 
-        for(const CommandRecord& record: m_commands)
+        if (strcmp(name, BuiltinCommandExit) == 0)
         {
-            if (strcmp(name, record.name) == 0)
+            endInteractiveSession();
+        }
+        else if (strcmp(name, BuiltinCommandHelp) == 0 || (strlen(name) == 1 && name[0] == '?'))
+        {
+            println();
+            printHelp();
+        }
+        else
+        {
+            for(CommandRecord& record: m_commands)
             {
-                doCommand(record);
-                break;
+                if (strcmp(name, record.name) == 0)
+                {
+                    println();
+                    doCommand(record, m_last_command_arguments_length, m_last_command_arguments);
+                    break;
+                }
             }
+        }
+
+        if (m_running_interactive_shell)
+        {
+            // we didn't exit so setup the prompt for the next command:
+            clearLineBuffer();
+            println();
+            clearLine();
+            prompt();
         }
 
         if (clear)
@@ -311,40 +371,64 @@ public:
     // | ANSI ESCAPE CODES
     // |        https://en.wikipedia.org/wiki/ANSI_escape_code
     // +----------------------------------------------------------------------+
+    #define CSI "\x1B\x5B"
+
+    void clearScreen()
+    {
+        print(CSI "2J");
+    }
+
     void clearLine()
     {
-        print("\e[2K");
+        print(CSI "2K");
     }
 
     void clearToEndOfLine()
     {
-        print("\e[1K");
+        print(CSI "1K");
     }
 
     void home()
     {
-        print("\e[0G");
+        print(CSI "0G");
     }
 
     void previousLine()
     {
-        print("\e[1F");
+        print(CSI "1F");
     }
 
     void nextLine()
     {
-        print("\e[1E");
+        print(CSI "1E");
     }
 
     void backspace()
     {
-        print("\e[1D\e[0K");
+        print(CSI "1D" CSI "0K");
     }
 
     void prompt()
     {
-        print("Botnet: ");
+        print(Prompt);
     }
+
+    void moveCursorTo(unsigned one_based_row, unsigned one_based_column)
+    {
+        print(CSI);
+        print(max(1,one_based_row));
+        print(';');
+        print(max(1,one_based_column));
+        print('H');
+    }
+
+    void moveCursorToColumn(unsigned one_based_column)
+    {
+        print(CSI);
+        print(max(1, one_based_column));
+        print('G');
+    }
+
     // +----------------------------------------------------------------------+
     // | arduino::Print
     // +----------------------------------------------------------------------+
@@ -394,20 +478,66 @@ public:
     static Terminal terminal;
 
 private:
+    // +----------------------------------------------------------------------+
+    // | PRIVATE :: BUFFER INITIALIZATION
+    // +----------------------------------------------------------------------+
+
     void initInternalBuffers()
     {
-        constexpr size_t TotalBuffersLength = LineBufferLength + MaxCommandLength + 1;
-
-        // Allocate raw storage
-        m_line_buffer  = new char[TotalBuffersLength];
-        m_last_command = m_line_buffer + LineBufferLength;
+        static_assert(LineBufferLength >= MaxCommandLength, "Line buffer must be at least large enough to store one command.");
+        // Allocate raw storage. +1 so we can add a null after the last string.
+        m_line_buffer  = new char[LineBufferLength + 1];
         clearCommand();
     }
 
-    int doCommand(const CommandRecord& record)
+    void deinitInternalBuffers()
     {
-        const char* argv[] = {"soil_proto"};
-        return record.command(*this, 1, argv);
+        free(m_line_buffer);
+        m_line_buffer = nullptr;
+        clearCommand();
+    }
+
+    // +----------------------------------------------------------------------+
+    // | PRIVATE :: I/O
+    // +----------------------------------------------------------------------+
+    ///
+    /// Call to try to read input from the serial device. This method returns immediatly
+    /// if no input is available or if the command delimeter was read. It will continue
+    /// to read into the line buffer for readTimeMillis while input is available.
+    ///
+    /// This allows us to process chunks of input and handle commands outside of this
+    /// frame.
+    /// 
+    /// @param  readTimeMillis  The number of milliseconds to read for.
+    /// @return true if command delimeter was read else false.
+    ///
+    bool read_for(unsigned long readTimeMillis)
+    {
+        unsigned long       now      = millis();
+        const unsigned long deadline = now + readTimeMillis;
+        while (deadline > now && m_serial.available())
+        {
+            const char read = m_serial.read();
+            if (read == LineDelimeter)
+            {
+                tokenize();
+                return true;
+            }
+            else if (!handleControlChar(read))
+            {
+                // This was not a control character. Treat as input.
+                if (!appendToLineBuffer(read))
+                {
+                    println();
+                    print(CSI "41mBUFFER LIMIT" CSI "0m");
+                    previousLine();
+                    moveCursorToColumn(strlen(Prompt) + m_line_buffer_fill);
+                }
+                m_serial.print(read);
+            }
+            now = millis();
+        }
+        return false;
     }
 
     bool handleControlChar(const char c)
@@ -429,7 +559,7 @@ private:
 
     bool appendToLineBuffer(const char c)
     {
-        if (m_line_buffer_fill < LineBufferLength - 1)
+        if (m_line_buffer && m_line_buffer_fill < LineBufferLength - 1)
         {
             m_line_buffer[m_line_buffer_fill] = c;
             m_line_buffer_fill += 1;
@@ -446,55 +576,89 @@ private:
         m_line_buffer_fill = 0;
     }
 
-    size_t readCommand(char* out) const
+    // +----------------------------------------------------------------------+
+    // | PRIVATE :: COMMAND EXECUTION
+    // +----------------------------------------------------------------------+
+    int doCommand(CommandRecord& record, size_t argumentListLen, const char* const arguments[])
     {
-        size_t bytes_read = 0;
-        while (bytes_read < m_line_buffer_fill && bytes_read < MaxCommandLength)
+        return record.command(*this, record.user, argumentListLen, arguments);
+    }
+
+    // +----------------------------------------------------------------------+
+    // | PRIVATE :: TOKENIZATION
+    // +----------------------------------------------------------------------+
+
+    ///
+    /// Parse the line buffer and store the results in our "last command"
+    /// data members.
+    ///
+    void tokenize()
+    {
+        size_t lineBufferOffset = 0;
+        if (makeNextToken(lineBufferOffset, m_last_command) > 0)
         {
-            out[bytes_read] = m_line_buffer[bytes_read];
-            if (out[bytes_read] == 0)
+            // we have a command. Let's find us some arguments!
+            m_last_command_arguments_length = 1;
+            while (m_last_command_arguments_length < MaxArgumentCount + 1 &&
+                   makeNextToken(lineBufferOffset, m_last_command_arguments[m_last_command_arguments_length]) > 0)
+            {
+                m_last_command_arguments_length += 1;
+            }
+        }
+    }
+
+    size_t makeNextToken(size_t& inoutLineBufferOffset, const char*& outToken)
+    {
+        size_t i = inoutLineBufferOffset;
+        size_t token_len = 0;
+        const char* start_of_token = nullptr;
+        bool reading_token = false;
+        while (i < m_line_buffer_fill)
+        {
+            const char next_char = m_line_buffer[i];
+            const bool is_word_deliniator = (arduino::isWhitespace(next_char) || 0 == next_char);
+            if (!is_word_deliniator && !reading_token)
+            {
+                // Found start of the next token.
+                reading_token = true;
+                start_of_token = &m_line_buffer[i];
+            }
+            else if (is_word_deliniator && reading_token)
             {
                 break;
             }
-            bytes_read += 1;
+            else if (reading_token)
+            {
+                token_len += 1;
+            }
+            i += 1;
         }
-        out[bytes_read] = 0;
-        return bytes_read;
-    }
-
-    bool delayForOneSecond()
-    {
-        if (m_alert_led > 0)
+        if (reading_token)
         {
-            digitalWrite(LED_BUILTIN, 1);
-            if (delayWithInput(500))
-            {
-                return true;
-            }
-            digitalWrite(LED_BUILTIN, 0);
-            if (delayWithInput(500))
-            {
-                return true;
-            }
+            // We've sized the line buffer so that its max fill is always 1 less then its capacity.
+            m_line_buffer[i] = 0;
+            outToken = start_of_token;
+            i += 1;
         }
         else
         {
-            if (delayWithInput(1000))
-            {
-                return true;
-            }
+            outToken = nullptr;
         }
-        return false;
+        inoutLineBufferOffset = i;
+        return token_len;
     }
 
-    // LED pin used by the terminal as a sort of visual bell.
-    // Set to 0 for none.
+    // +----------------------------------------------------------------------+
+    // | DATA MEMBERS
+    // +----------------------------------------------------------------------+
     std::array<CommandRecord, CommandCount> m_commands;
     SerialType&                             m_serial;
-    const int                               m_alert_led;
     char*                                   m_line_buffer;
-    char*                                   m_last_command;
+    const char*                             m_last_command;
+    const char*                             m_last_command_arguments[MaxArgumentCount + 1];
+    size_t                                  m_last_command_arguments_length;
     size_t                                  m_line_buffer_fill;
+    bool                                    m_running_interactive_shell;
 };
 
 }  // namespace BotanyNet

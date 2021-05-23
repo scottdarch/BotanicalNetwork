@@ -25,8 +25,16 @@
 //  SOFTWARE.
 //
 
+// +--------------------------------------------------------------------------+
+// | PLATFORM
+// +--------------------------------------------------------------------------+
 #include <type_traits>
 #include <Arduino.h>
+
+// +--------------------------------------------------------------------------+
+// | LIBRARIES
+// +--------------------------------------------------------------------------+
+// From https://github.com/practicalarduino/SHT1x
 #include <SHT1x.h>
 #include <ArduinoMqttClient.h>
 #include <RTCZero.h>
@@ -34,6 +42,9 @@
 #include <ArduinoECCX08.h>
 #include <ECCX08.h>
 
+// +--------------------------------------------------------------------------+
+// | APPLICATION
+// +--------------------------------------------------------------------------+
 #include "config.hpp"
 #include "HomeNet.hpp"
 #include "SoilProbe.hpp"
@@ -45,14 +56,32 @@
 // +--------------------------------------------------------------------------+
 using BotnetTerminal = BotanyNet::Terminal<typeof(Serial), 1>;
 
-int commandMode(arduino::Stream& t, int argc, const char* argv[])
+int setRegister(arduino::Stream& t, void* user, size_t argc, const char* const argv[])
 {
-    t.print("called mode.");
-    return 0;
+    if (argc < 2)
+    {
+        t.println("set register called with no key.");
+        return -1;
+    }
+    else
+    {
+        t.print("Will set register ");
+        t.print(argv[1]);
+        t.print(" to value ");
+        if (argc > 2)
+        {
+            t.println(argv[2]);
+        }
+        else
+        {
+            t.println("<null>");
+        }
+        return 0;
+    }
 }
 
 
-static const char* const CommandHelpMode = "This is a test of our command structure.";
+static const char* const CommandHelpSet = "Set a value in EMMC. The first argument is the key and the second is the value.";
 
 template<> BotnetTerminal BotnetTerminal::terminal(
     Serial,
@@ -60,9 +89,10 @@ template<> BotnetTerminal BotnetTerminal::terminal(
     {
         {
             {
-                "mode",
-                commandMode,
-                CommandHelpMode
+                "set",
+                nullptr,
+                setRegister,
+                CommandHelpSet
             }
         }
     }
@@ -309,50 +339,96 @@ void setup(void)
     terminal.begin(115200);
 
     probe.start();
+
     // (thanks https://www.element14.com/community/community/project14/iot-in-the-cloud/blog/2019/05/27/the-windchillator-reducing-the-sleep-current-of-the-arduino-mkr-wifi-1010-to-800-ua)
     // Turn off crypto part to save power.
     ECCX08.begin();
     ECCX08.end();
 
-    terminal.startupDelay();
-
-    terminal.print("Starting prototype bot(any)net node ");
-    terminal.println(BotnetNodeId);
-
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
     clock.begin();
+    
+    //
+    // Wait for a bit to allow a user interactive session to 
+    // interrupt the program.
+    //
+    unsigned long       now         = millis();
+    const unsigned long delay_until = StartupDelayMillis + now;
+    while(delay_until > now)
+    {
+        terminal.clearLine();
+        terminal.home();
+        terminal.print("Starting program in ");
+        terminal.print((delay_until - now) / 1000U);
+        terminal.print(" seconds...");
 
-    terminal.println("Sensor started...");
+        digitalWrite(LED_BUILTIN, 1);
+        if (terminal.delayWithInput(500))
+        {
+            terminal.startInteractiveSession();
+            break;
+        }
+        digitalWrite(LED_BUILTIN, 0);
+        if (terminal.delayWithInput(500))
+        {
+            terminal.startInteractiveSession();
+            break;
+        }
+        now = millis();
+    }
+
+    if (!terminal.isInteractive())
+    {
+        terminal.print("Starting prototype bot(any)net node ");
+        terminal.println(BotnetNodeId);
+    }
 }
 
-void loop(void)
+static inline void loop_sensor(void)
 {
     const unsigned long now_millis = millis();
     checkLan(now_millis);
     checkMqtt(now_millis);
     switch (state)
     {
-    case SketchState::Initializing:
-    case SketchState::WaitingForLan: {
-        handleWaitingForLan(now_millis);
+        case SketchState::Initializing:
+        case SketchState::WaitingForLan: {
+            handleWaitingForLan(now_millis);
+        }
+        break;
+        case SketchState::Online:
+        case SketchState::WaitingForMqtt: {
+            handleWaitingForMqtt(now_millis);
+        }
+        break;
+        case SketchState::BotnetOnline: {
+            runBotnet(now_millis);
+        }
+        break;
+        default: {
+            terminal.print("ERROR: unknown state encountered ");
+            terminal.println(static_cast<std::underlying_type<SketchState>::type>(state));
+            while (1)
+            {}
+        }
     }
-    break;
-    case SketchState::Online:
-    case SketchState::WaitingForMqtt: {
-        handleWaitingForMqtt(now_millis);
+}
+
+static inline void loop_shell(void)
+{
+    terminal.service();
+}
+
+void loop(void)
+{
+    if (!terminal.isInteractive())
+    {
+        loop_sensor();
     }
-    break;
-    case SketchState::BotnetOnline: {
-        runBotnet(now_millis);
-    }
-    break;
-    default: {
-        terminal.print("ERROR: unknown state encountered ");
-        terminal.println(static_cast<std::underlying_type<SketchState>::type>(state));
-        while (1)
-        {}
-    }
+    else
+    {
+        loop_shell();
     }
 }

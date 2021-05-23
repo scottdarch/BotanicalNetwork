@@ -90,4 +90,14 @@ constexpr int WiFiNINAPinLEDBlue = 27;
 #define BOTNET_SERIAL_DEBUG_PRINTLN(DATA) do {} while(0)
 #endif
 
+// These should come from arduino_secrets.h. If they are missing we create
+// dummies to account for unit tests and other debugging activities.
+#ifndef SECRET_SSID
+#define SECRET_SSID ""
+#endif
+
+#ifndef SECRET_PASS
+#define SECRET_PASS ""
+#endif
+
 #endif  // BOTANYNET_CONFIG_INCLUDED_H
