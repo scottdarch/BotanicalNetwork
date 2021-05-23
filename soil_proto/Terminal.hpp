@@ -47,11 +47,6 @@ public:
     static constexpr const char* const Prompt = "Botnet: ";
 
     ///
-    /// The first argument passed to each command.
-    ///
-    static constexpr const char* const ProgramName = "botnet_terminal";
-
-    ///
     /// A built-in command that prints help text for using all the user-provided
     /// commands.
     ///
@@ -84,7 +79,7 @@ public:
     /// The maximum number of characters for any one command. This limits the
     /// size of internal command buffers and the keys for command lookup tables.
     ///
-    static constexpr size_t MaxCommandLength = 10;
+    static constexpr size_t MaxCommandLength = 16;
 
     ///
     /// The maximum length of a single line of the terminal.
@@ -137,7 +132,7 @@ private:
         , m_serial(serial)
         , m_line_buffer(nullptr)
         , m_last_command(nullptr)
-        , m_last_command_arguments{ProgramName, 0}
+        , m_last_command_arguments{0}
         , m_last_command_arguments_length(1)
         , m_line_buffer_fill{0}
         , m_running_interactive_shell(false)
@@ -313,7 +308,7 @@ public:
     void clearCommand()
     {
         m_last_command = nullptr;
-        m_last_command_arguments_length = 1;
+        m_last_command_arguments_length = 0;
     }
 
     ///
@@ -339,12 +334,12 @@ public:
         }
         else
         {
-            for(CommandRecord& record: m_commands)
+            for(const CommandRecord& record: m_commands)
             {
                 if (strcmp(name, record.name) == 0)
                 {
                     println();
-                    doCommand(record, m_last_command_arguments_length, m_last_command_arguments);
+                    record.command(*this, record.user,  m_last_command_arguments_length, m_last_command_arguments);
                     break;
                 }
             }
@@ -577,14 +572,6 @@ private:
     }
 
     // +----------------------------------------------------------------------+
-    // | PRIVATE :: COMMAND EXECUTION
-    // +----------------------------------------------------------------------+
-    int doCommand(CommandRecord& record, size_t argumentListLen, const char* const arguments[])
-    {
-        return record.command(*this, record.user, argumentListLen, arguments);
-    }
-
-    // +----------------------------------------------------------------------+
     // | PRIVATE :: TOKENIZATION
     // +----------------------------------------------------------------------+
 
@@ -598,6 +585,7 @@ private:
         if (makeNextToken(lineBufferOffset, m_last_command) > 0)
         {
             // we have a command. Let's find us some arguments!
+            m_last_command_arguments[0] = m_last_command;
             m_last_command_arguments_length = 1;
             while (m_last_command_arguments_length < MaxArgumentCount + 1 &&
                    makeNextToken(lineBufferOffset, m_last_command_arguments[m_last_command_arguments_length]) > 0)
@@ -651,14 +639,14 @@ private:
     // +----------------------------------------------------------------------+
     // | DATA MEMBERS
     // +----------------------------------------------------------------------+
-    std::array<CommandRecord, CommandCount> m_commands;
-    SerialType&                             m_serial;
-    char*                                   m_line_buffer;
-    const char*                             m_last_command;
-    const char*                             m_last_command_arguments[MaxArgumentCount + 1];
-    size_t                                  m_last_command_arguments_length;
-    size_t                                  m_line_buffer_fill;
-    bool                                    m_running_interactive_shell;
+    const std::array<CommandRecord, CommandCount>   m_commands;
+    SerialType&                                     m_serial;
+    char*                                           m_line_buffer;
+    const char*                                     m_last_command;
+    const char*                                     m_last_command_arguments[MaxArgumentCount + 1];
+    size_t                                          m_last_command_arguments_length;
+    size_t                                          m_line_buffer_fill;
+    bool                                            m_running_interactive_shell;
 };
 
 }  // namespace BotanyNet

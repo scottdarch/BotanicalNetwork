@@ -54,34 +54,41 @@
 // +--------------------------------------------------------------------------+
 // | TERMINAL
 // +--------------------------------------------------------------------------+
-using BotnetTerminal = BotanyNet::Terminal<typeof(Serial), 1>;
+using BotnetTerminal = BotanyNet::Terminal<typeof(Serial), 2>;
 
-int setRegister(arduino::Stream& t, void* user, size_t argc, const char* const argv[])
+class SetRegister
 {
-    if (argc < 2)
+public:
+    SetRegister() = delete;
+
+    static constexpr const char* const HelpText = "Set a value in EMMC. The first argument is the key and the second is the value.";
+
+    static int setRegister(arduino::Stream& t, void* user, size_t argc, const char* const argv[])
     {
-        t.println("set register called with no key.");
-        return -1;
-    }
-    else
-    {
-        t.print("Will set register ");
-        t.print(argv[1]);
-        t.print(" to value ");
-        if (argc > 2)
+        t.print("set register called using ");
+        t.println(argv[0]);
+        if (argc < 2)
         {
-            t.println(argv[2]);
+            t.println("set register called with no key.");
+            return -1;
         }
         else
         {
-            t.println("<null>");
+            t.print("Will set register ");
+            t.print(argv[1]);
+            t.print(" to value ");
+            if (argc > 2)
+            {
+                t.println(argv[2]);
+            }
+            else
+            {
+                t.println("<null>");
+            }
+            return 0;
         }
-        return 0;
     }
-}
-
-
-static const char* const CommandHelpSet = "Set a value in EMMC. The first argument is the key and the second is the value.";
+};
 
 template<> BotnetTerminal BotnetTerminal::terminal(
     Serial,
@@ -91,8 +98,14 @@ template<> BotnetTerminal BotnetTerminal::terminal(
             {
                 "set",
                 nullptr,
-                setRegister,
-                CommandHelpSet
+                SetRegister::setRegister,
+                SetRegister::HelpText
+            },
+            {
+                "set-secure",
+                nullptr,
+                SetRegister::setRegister,
+                SetRegister::HelpText
             }
         }
     }
